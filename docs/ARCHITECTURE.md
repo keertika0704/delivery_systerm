@@ -16,8 +16,9 @@ app launch.
 ```
 
 Dependency rule: `config` ← `feature_engineering` ← `preprocessing`; `config` ← `analytics`,
-`statistical_analysis`, `insights`, `train_model`, `prediction`, `charts`; only `ui.py`, `app.py`
-and `pages/*` import `streamlit`. Everything under `src/` except `ui.py` is pure Python/pandas and
+`statistical_analysis`, `insights`, `train_model`, `prediction`, `charts`; additionally `train_model` ←
+`prediction` (training reuses `derive_model_features`, `coerce_feature_frame`, `HARD_LIMITS` so inference and training
+cannot drift); only `ui.py`, `app.py` and `pages/*` import `streamlit`. Everything under `src/` except `ui.py` is pure Python/pandas and
 unit-testable without Streamlit.
 
 Always run with the project venv: `.venv/bin/python` (Python 3.12). Shared constants live in
@@ -137,6 +138,32 @@ Operates on the **delivered/eligible** frame.
 * `processing_summary(df)`, `late_by_processing_bucket(df)` (retrospective).
 * `delay_trend(df, freq="M")`.
 
+**Track A as built (analytics / statistics / insights):**
+* `apply_filters(statuses=...)` filters on the *derived delivery-status label* `"late"` / `"on_time"` (from `is_late`;
+  case-insensitive, `"on time"` accepted), **not** on `order_status` (all rows are already delivered). An unknown label
+  emits a `UserWarning` and matches no rows.
+* Table functions (`state_performance(by=)`, `category_performance`, `state_pair_performance`, `monthly_performance`,
+  `delay_trend`, `binned_stat`, `same_state_comparison`) take `min_orders` (default 0, so `reliable` is True for every row
+  unless the caller sets a threshold) and, where Wilson intervals are shown, `alpha` (default 0.05). `monthly_performance`
+  and `delay_trend` also return `late_ci_low`, `late_ci_high`, `reliable`.
+* Added helpers: `weight_bins`, `freight_bins`, `same_state_comparison`, `state_matrix`, `category_cost_comparison`,
+  `scatter_sample`, `delivery_status_label`, `wilson_ci_arrays`; `high_delay_segments(..., alpha, direction="high"|"low")`
+  adds `excess_vs_overall` and `rate_ratio`.
+* `statistical_analysis` adds `two_proportion_ztest`, `holm_adjust`, `cramers_v_label`, `spearman_strength`;
+  `run_all_tests` returns a `summary` frame with Holm-adjusted p-values (`p_holm`, `significant_holm`).
+* `generate_insights(df, min_orders, alpha)`: segment screens use *unadjusted* Wilson intervals at `1 - alpha` and every
+  such insight states how many segments were screened (`n_screened` in `metrics`); the month screen is Bonferroni-adjusted.
+  `category_delay.metrics["flagged"]` lists the shown categories whose interval excludes the overall rate; recommendations
+  name only those.
+* Terminology: `reliable` (analytics tables) only means `n_orders >= min_orders`; "reliably higher/lower" in insight text
+  and the `regional_report` `flag` ("Above/Below overall (interval excludes it)", "Interval includes overall") mean the
+  unadjusted Wilson interval excludes the overall rate. `summary_report(..., alpha=None)` takes its confidence level from
+  the insights' `alpha`; `regional_report(df, min_orders, alpha)`. `spearman_test` reports no CI (NaN, with a `note`) when
+  either variable is binary; `run_all_tests` stores `p_holm` / `n_tests` on each result so `plain_language` quotes the
+  Holm-adjusted p-value next to the per-test (unadjusted) one (`n_tests` counts only tests that produced a p-value).
+  Kruskal-Wallis effect size is epsilon-squared = H / (n - 1); p-values that underflow to 0 are reported as
+  `statistical_analysis.P_FLOOR`; the `purchase_month` chi-square carries a `caveat` (months pooled across years).
+
 ### `src/statistical_analysis.py`
 `chi_square_test(df, col, target="is_late", min_expected=5, top_n=None) -> dict` (`chi2, dof, p_value, n,
 cramers_v, effect_label, table, merged_rare_levels`), `spearman_test(df, x, y, alpha) -> dict` (`rho, p_value, n,
@@ -171,6 +198,39 @@ bands chosen on validation; permutation importance on validation/test. Saves:
 silently drops/ignores a missing feature), `predict_risk(inputs, bundle=None) -> dict` (`probability, risk_label,
 risk_color, thresholds, model_name, features_used`), `predict_batch(df, bundle=None) -> DataFrame`,
 `risk_label(p, thresholds)`. Raises `ValueError` on invalid input.
+
+**Implementation notes (Phase 2, as built — `train_model` / `prediction`)**
+
+* *Bundle keys* (`models/delay_classifier.joblib`) beyond the contract: `base_pipeline` (uncalibrated), `calibrated`
+  (bool), `decision_threshold` (F1-optimal cut on validation), `probability_floor` (exact-zero isotonic scores are raised to
+  the Laplace-smoothed validation late rate of that level, 0.0 if none), `score_resolution` (distinct score levels / max
+  on validation: the calibrated output is a step function).
+* *`form_options`* adds `state_pair_min_orders`, `defaults_note`, `hard_limits`, `date_span` (the purchase-date span the model was FITTED on = `train_window`, drives the out-of-span warning), `dataset_date_span` (whole dataset, informational);
+  `ranges` are the **training-window** min/max and only drive non-blocking warnings.
+* *Input contract:* raw purchase-time primitives (`prediction.ACCEPTED_FIELDS`): three required categoricals, `n_items`,
+  `total_price`, `total_freight`, and a time given as `purchase_date` (preferred) or `purchase_month` (+ optional
+  `purchase_dow`). Optional numerics left blank are filled from training defaults (state-pair median for
+  `estimated_delivery_days`) and reported in `assumptions_used`. `purchase_date` accepts datetime-like objects and ISO
+  `YYYY-MM-DD[ HH:MM[:SS]]` strings only (numbers and dd/mm/yyyy are errors).
+* *Errors vs warnings:* errors (block scoring) = missing/unknown categoricals, non-numeric / non-integer values, values
+  outside `prediction.HARD_LIMITS` (impossible values, not data-derived), unreadable or absurd dates, unknown field names.
+  Warnings (never block) = value outside the training range or the dataset date span: the model extrapolates (e.g.
+  3-7-day promises occur in the test window but not in training).
+* *Public pieces:* `derive_model_features(raw)` (single source of truth for `freight_ratio`, `same_state`,
+  month/dow/quarter, parity-tested against the processed table), `coerce_feature_frame` (first pipeline step),
+  `check_input(inputs) -> (cleaned, errors, warnings)` (`validate_input` = its first two items), `risk_labels` (vectorised).
+* *`predict_risk`* returns, besides the contract keys: `assumptions_used`, `derived_features`, `decision_threshold`,
+  `calibrated`, `warnings`, `probability_note` (step-function caveat + the test-window finding), `test_window_caveat`
+  (structured test-window figures: mean predicted vs observed, Brier / log-loss vs the constant baseline, test late rate per risk
+  band, `test_performance_degraded`; also stored in the bundle). *`predict_batch`* adds columns `late_probability`, `risk_label`,
+  `assumptions_used`, `input_warning`, `input_error`.
+* *Honest reporting in `model_metrics.json`:* validation metrics are labelled tuned / in-sample (`validation_note`); the
+  selected model carries `test_window_assessment` (lift with bootstrap CI, Brier / log-loss vs the constant baseline, mean
+  predicted vs observed) and `test_window_warnings`, which feed `rationale` and `metric_guidance`; `risk_bands` carry Wilson
+  intervals, actual shares and `*_diagnostics` (monotone? overlapping adjacent intervals?); `split.covariate_support` gives the
+  per-window share of orders outside the training feature range; `permutation_importance` reports validation (`items`) and
+  test (`test_items`, diagnostic only) rankings. Top-10 % precision / recall use expected values under random tie-breaking
+  (a constant-score baseline equals the prevalence).
 
 ### `src/charts.py` (Plotly figure builders; each accepts DataFrames from analytics, returns `go.Figure`;
 must render a clean "no data for current filters" figure on empty input)
