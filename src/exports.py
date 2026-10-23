@@ -342,6 +342,39 @@ def sort_insights(insights: Iterable[Any]) -> list[Any]:
     return [i for _, i in sorted(enumerate(items), key=key)]
 
 
+SINGLE_REGION_SECTION = "regional comparison (only one region in view)"
+
+
+def comparable_insights(insights: Iterable[Any], min_orders: int) -> list[Any]:
+    """Drop findings that compare a segment with itself.
+
+    With a single customer state in view the "region vs overall" screen is vacuous (the one region IS the
+    overall), so its "none of the 1 regions is above" card is removed and the comparison is listed among the
+    skipped sections of the data-sufficiency note instead.  Everything else passes through unchanged.
+    """
+    from .insights import Insight  # local import: keeps this module importable without the insights stack
+
+    items = list(insights)
+    vacuous = [i for i in items if getattr(i, "kind", "") == "region_high"
+               and int((getattr(i, "metrics", None) or {}).get("n_screened", 2) or 0) < 2
+               and not (getattr(i, "metrics", None) or {}).get("n_flagged")]
+    if not vacuous:
+        return items
+    out = [i for i in items if not any(i is v for v in vacuous)]
+    overview = next((i for i in out if getattr(i, "kind", "") == "overview"), None)
+    n = int(getattr(overview, "n", 0) or 0)
+    old = next((i for i in out if getattr(i, "kind", "") == "insufficient_data"), None)
+    sections = list((getattr(old, "metrics", None) or {}).get("sections", [])) if old is not None else []
+    if SINGLE_REGION_SECTION not in sections:
+        sections.insert(0, SINGLE_REGION_SECTION)
+    note = Insight(
+        "insufficient_data", "Insufficient data for some comparisons",
+        f"With {n:,} orders and a minimum of {int(min_orders):,} orders per segment, there is not enough data to report: "
+        + "; ".join(sections) + ". Widen the filters or collect more orders before drawing conclusions about these.",
+        {"sections": sections, "min_orders": int(min_orders), "n_orders": n}, n)
+    return [note if i is old else i for i in out] if old is not None else out + [note]
+
+
 def _seg_pair(seg: Mapping, key: str, label_fn=str) -> tuple[str, str]:
     return label_fn(seg.get(key, "?")), f"{_pct(seg.get('late_rate'))} late (n = {_int(seg.get('n_orders'))})"
 

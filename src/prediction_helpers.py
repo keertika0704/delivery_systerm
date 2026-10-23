@@ -42,6 +42,7 @@ FIELD_LABELS: dict[str, str] = {
     "max_product_width_cm": "Widest product width",
     "purchase_month": "Purchase month",
     "purchase_dow": "Purchase weekday",
+    "freight_ratio": "Freight-to-price ratio",
 }
 _FIELD_RE = re.compile(r"\b(" + "|".join(sorted(FIELD_LABELS, key=len, reverse=True)) + r")\b")
 
@@ -65,6 +66,12 @@ def humanise_error(message: str) -> tuple[str | None, str]:
 
     text = _FIELD_RE.sub(repl, msg)
     return field, text
+
+
+def humanise_warning(message: str) -> str:
+    """Plain-language version of a non-blocking ``prediction`` warning (raw field names -> labels)."""
+    msg = str(message).replace("freight_ratio (freight / price)", "freight_ratio")
+    return humanise_error(msg)[1]
 
 
 def field_errors(errors: list[str]) -> tuple[dict[str, list[str]], list[str]]:
@@ -307,7 +314,9 @@ def limitations(bundle: Mapping, metrics: Mapping | None, *, include_calibration
     if include_bands and sep and "barely separated" in sep:
         lines.append("**Bands overlap.** " + sep.split("The Moderate and High")[0].strip()
                      + " The Moderate and High bands are barely separated on the test window.")
-    lines.append("**Historical data only.** The model learned from Olist orders placed in 2016-2018; it says nothing certain about "
+    years = sorted({str(mi[k])[:4] for k in ("train_start", "test_end") if mi.get(k)})
+    when = f" placed in {years[0]}-{years[-1]}" if len(years) > 1 else (f" placed in {years[0]}" if years else "")
+    lines.append(f"**Historical data only.** The model learned from Olist orders{when}; it says nothing certain about "
                  "today's carriers, routes or customers. It finds associations in that data, not causes, and a prediction is "
                  "never a guarantee for any single order.")
     return lines
@@ -411,9 +420,29 @@ def interpretation(result: Mapping[str, Any], bundle: Mapping, metrics: Mapping 
 
     # ---- suggested actions
     tb = bands_test.get(label)
+    kind = "success" if label == "Low" else "watch"
     if label == "Low":
-        act = ("Routine monitoring is enough on this signal alone. A Low band is not a guarantee: "
-               + (f"Low-band orders were still late {pct(tb['late_rate'])} of the time on the test window (n = {int(tb['n']):,})." if tb else "some Low-band orders are late."))
+        low_note = (f"Low-band orders were still late {pct(tb['late_rate'])} of the time on the test window (n = {int(tb['n']):,})."
+                    if tb else "some Low-band orders are late.")
+        # the Low band is not equally safe for same-state and cross-state orders (the direction reversed between windows)
+        grp = None
+        if route and route[0] and route[1]:
+            key = "same_state" if route[0] == route[1] else "other_state"
+            grp = (((metrics or {}).get("risk_bands") or {}).get("test_by_same_state") or {}).get(key, {}).get("bands", {}).get("Low")
+        if grp and _num(grp.get("late_rate")) is not None and grp.get("n"):
+            who = "same-state orders (seller and customer in the same state)" if key == "same_state" else "orders shipped across states"
+            low_note = (f"On the test window, Low-band {who} were late {pct(grp['late_rate'])} of the time (n = {int(grp['n']):,}), "
+                        f"against {pct(tb['late_rate'])} for all Low-band orders (n = {int(tb['n']):,})." if tb else
+                        f"On the test window, Low-band {who} were late {pct(grp['late_rate'])} of the time (n = {int(grp['n']):,}).")
+            overall = (wins.get("test") or {}).get("late_rate")
+            if overall and float(grp["late_rate"]) >= 0.9 * float(overall):
+                kind = "watch"
+                act = (f"Do not read Low as safe for this kind of order. {low_note} That is about the same as the overall "
+                       f"test-window late rate of {pct(overall)}, so on this signal alone the band says little for such orders.")
+            else:
+                act = f"Routine monitoring is enough on this signal alone. A Low band is not a guarantee: {low_note}"
+        else:
+            act = f"Routine monitoring is enough on this signal alone. A Low band is not a guarantee: {low_note}"
     else:
         act = ("Worth a closer look rather than an alarm. Things an operations manager could investigate: the seller handover time and "
                "carrier capacity on this route, whether the delivery promise is realistic for it, and proactive status updates to the customer. ")
@@ -422,7 +451,7 @@ def interpretation(result: Mapping[str, Any], bundle: Mapping, metrics: Mapping 
         sep = band_separation_text(metrics)
         act += ("Moderate and High are barely distinguishable there, so use the band as a rough triage, not a precise ranking." if sep and "barely separated" in sep
                 else "use the band as a rough triage, not a precise ranking.")
-    out.append({"tag": "Suggested actions", "kind": "success" if label == "Low" else "watch", "title": "Suggested actions", "body": act})
+    out.append({"tag": "Suggested actions", "kind": kind, "title": "Suggested actions", "body": act})
     return out
 
 

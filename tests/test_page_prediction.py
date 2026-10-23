@@ -524,7 +524,9 @@ def test_result_kpis_match_pandas_for_route(bundle, metrics, orders, seller, cus
     tw, vw = metrics["split"]["test"], metrics["split"]["validation"]
     tcard = cards["Test-window late rate"]
     assert tcard["value"] == ui.fmt_pct(tw["late_rate"]) and tcard["value"] != ui.fmt_pct(vw["late_rate"])
-    assert ui.fmt_n(tw["n"]) in tcard["sub"] and tw["start"] in tcard["sub"] and tw["end"] in tcard["sub"]
+    sub_txt = tcard["sub"].replace("\u2011", "-")          # dates use non-breaking hyphens so they never wrap mid-date
+    assert ui.fmt_n(tw["n"]) in sub_txt and tw["start"] in sub_txt and tw["end"] in sub_txt
+    assert "\u2011" in tcard["sub"] and not re.search(r"\d-\d", tcard["sub"])
     rcard = cards["Observed on this route"]
     assert rcard["value"] == ui.fmt_pct(sub["is_late"].astype(float).mean())
     assert rcard["sub"] == f"{seller} to {customer}, {ui.fmt_n(len(sub))}"
@@ -716,7 +718,8 @@ def test_importance_radio_switches_the_window_and_chart_data(metrics):
     spec_t = _chart_spec(at, "pred_importance")
     feats_t, vals_t = expected(pi["test_items"])
     assert np.allclose(_arr(spec_t["data"][0]["x"]), vals_t) and not np.allclose(_arr(spec_t["data"][0]["x"]), vals)
-    assert "test window" in spec_t["layout"]["xaxis"]["title"]["text"]
+    assert spec_t["layout"]["title"]["subtitle"]["text"].startswith("Test window.")
+    assert spec["layout"]["title"]["subtitle"]["text"].startswith("Validation window.")
     labels = [str(t) for t in spec_t["data"][1]["text"]]
     assert not any(t.strip().startswith("-0.000") for t in labels)           # no negative zero
 
@@ -1027,3 +1030,178 @@ def test_scenario_chart_colours_follow_the_band_and_threshold_lines_are_drawn():
     notes = " ".join(a.text for a in fig.layout.annotations)
     assert "Moderate from 6.4%" in notes and "High from 16.5%" in notes
     assert not [s for s in charts.scenario_comparison_chart(sc, None).layout.shapes if s.type == "line"]
+
+
+# =========================================================================== #
+# Second review round: warnings wording, text facts, same-state Low band, KPI layout, mutation survivors
+# =========================================================================== #
+RAW_FIELD_RE = re.compile(r"\b(" + "|".join(sorted(H.FIELD_LABELS, key=len, reverse=True)) + r")\b")
+
+
+def test_humanise_warning_replaces_every_raw_field_name(bundle, orders):
+    inp = {**_example_inputs(bundle, orders), "estimated_delivery_days": 3, "total_price": 90_000.0, "total_freight": 5_000.0,
+           "n_items": 40, "total_weight_g": 900_000, "purchase_date": "2026-10-23"}
+    raw = prediction.predict_risk(inp, bundle)["warnings"]
+    ratio_inp = {**_example_inputs(bundle, orders), "total_price": 10.0, "total_freight": 200.0}   # each in range, the ratio is not
+    raw += prediction.predict_risk(ratio_inp, bundle)["warnings"]
+    assert len(raw) >= 5 and any("freight_ratio" in w for w in raw) and any("purchase_date" in w for w in raw)
+    for w in raw:
+        nice = H.humanise_warning(w)
+        assert not RAW_FIELD_RE.search(nice) and "_" not in nice.split("(")[0], nice
+        assert nice[0].isupper()
+    assert H.humanise_warning("freight_ratio (freight / price) = 57.8 is outside the range the model was trained on (0 to 1)") \
+        .startswith("Freight-to-price ratio = 57.8 is outside")
+    assert H.humanise_warning("estimated_delivery_days = 3 is outside the range (8 to 156)").startswith("Delivery promise = 3")
+
+
+def test_out_of_range_warnings_on_the_page_use_labels_not_column_names():
+    at = _fresh()
+    at.date_input(key="pred_date").set_value(datetime.date(2026, 10, 23))
+    at.number_input(key="pred_price").set_value(90_000.0)
+    at.number_input(key=_promise_key(at)).set_value(3)
+    at = _submit(at)
+    assert not at.exception
+    texts = [str(m.value) for m in at.get("html")] + [str(m.value) for m in at.markdown]
+    watch = [t for t in texts if "Outside what the model was trained on" in t]
+    assert len(watch) >= 3
+    body = " ".join(t for t in texts if "is outside the" in t)
+    for raw in ("purchase_date", "total_price", "estimated_delivery_days", "freight_ratio"):
+        assert raw not in body, raw
+    for label in ("Purchase date is outside the dates the model was trained on", "Total product value = 90,000",
+                  "Delivery promise = 3"):
+        assert label in body, label
+
+
+def test_historical_limitation_names_the_training_years_not_2016(bundle, metrics):
+    mi = H.model_info(bundle, metrics)
+    line = next(ln for ln in H.limitations(bundle, metrics) if ln.startswith("**Historical data only.**"))
+    assert f"placed in {mi['train_start'][:4]}-{mi['test_end'][:4]}" in line and "2016" not in line
+    assert str(metrics["split"]["train"]["start"])[:4] == "2017"          # the 2016 orders were excluded from training
+    assert "2016" not in " ".join(H.limitations(bundle, metrics))
+    # without any window information the sentence still reads correctly
+    bare = next(ln for ln in H.limitations({"model_name": "x"}, None) if ln.startswith("**Historical data only.**"))
+    assert "Olist orders; it says nothing" in bare
+
+
+def test_limitation_lines_include_the_weaker_on_later_data_line(bundle, metrics):
+    mi = H.model_info(bundle, metrics)
+    line = next(ln for ln in H.limitations(bundle, metrics) if ln.startswith("**Weaker on later data.**"))
+    assert f"ROC-AUC was {mi['val_roc_auc']:.2f}" in line and f"fell to {mi['test_roc_auc']:.2f}" in line
+    assert next(ln for ln in H.limitations(bundle, metrics) if ln.startswith("**Modest signal.**"))
+
+
+def _low_note(metrics, bundle, route, p=0.02):
+    items = H.interpretation({"probability": p, "risk_label": "Low"}, bundle, metrics, None, route)
+    return items[-1]
+
+
+def test_low_band_same_state_orders_get_their_own_rates_and_no_green_reassurance(bundle, metrics):
+    tbs = metrics["risk_bands"]["test_by_same_state"]
+    overall = metrics["split"]["test"]["late_rate"]
+    same, other = tbs["same_state"]["bands"]["Low"], tbs["other_state"]["bands"]["Low"]
+    pooled = next(r for r in metrics["risk_bands"]["test"] if r["band"] == "Low")
+    assert same["late_rate"] >= 0.9 * overall > other["late_rate"]           # the stored diagnostics really differ by route type
+    a = _low_note(metrics, bundle, ("SP", "SP"))
+    assert a["kind"] == "watch" and "Routine monitoring is enough" not in a["body"]
+    assert f"{100 * same['late_rate']:.1f}%" in a["body"] and f"n = {same['n']:,}" in a["body"]
+    assert f"{100 * pooled['late_rate']:.1f}%" in a["body"] and f"{100 * overall:.1f}%" in a["body"]
+    b = _low_note(metrics, bundle, ("SP", "RJ"))
+    assert b["kind"] == "success" and "Routine monitoring is enough" in b["body"]
+    assert f"{100 * other['late_rate']:.1f}%" in b["body"] and f"n = {other['n']:,}" in b["body"] and "across states" in b["body"]
+    c = _low_note(metrics, bundle, None)                                      # no route known: pooled Low-band wording as before
+    assert c["kind"] == "success" and f"n = {pooled['n']:,}" in c["body"]
+    # a non-Low band never gets the Low wording
+    mod = H.interpretation({"probability": 0.1, "risk_label": "Moderate"}, bundle, metrics, None, ("SP", "SP"))[-1]
+    assert mod["kind"] == "watch" and "Do not read Low" not in mod["body"]
+
+
+def test_same_state_low_result_on_the_page_is_not_a_green_box():
+    at = _submit(_fresh())                                                    # default order is SP to SP
+    inp = at.session_state["pred_last"]["inputs"]
+    res = at.session_state["pred_last"]["result"]
+    assert inp["seller_state"] == inp["customer_state"]
+    if res["risk_label"] == "Low":
+        html = _html(at)
+        assert "Do not read Low as safe for this kind of order" in html and "Routine monitoring is enough" not in html
+
+
+def test_kpi_label_rows_share_a_min_height_and_dates_do_not_wrap():
+    src = Path(PAGE).read_text(encoding="utf-8")
+    assert re.search(r"\.diq-kpi-top\{[^}]*min-height", src)
+    at = _submit(_fresh())
+    assert "\u2011" in _cards(at)["Test-window late rate"]["sub"]
+
+
+def test_importance_chart_axis_title_is_short_and_window_is_in_the_subtitle(metrics):
+    for w in ("validation", "test"):
+        fig = charts.feature_importance_chart(metrics, window=w)
+        assert fig.layout.xaxis.title.text == "Drop in PR-AUC" and len(fig.layout.xaxis.title.text) <= 20
+        assert fig.layout.title.subtitle.text.startswith(f"{w.capitalize()} window.")
+
+
+def _wilson(k, n, z=1.959963984540054):
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * (p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5 / d
+    return c - h, c + h
+
+
+def test_observed_text_prints_the_wilson_interval_of_the_route(bundle, metrics, orders):
+    hist = H.historical_context(orders, "SP", "RJ", "bed_bath_table")
+    r = _route(orders, "SP", "RJ")
+    k, n = int(r["is_late"].astype(float).sum()), len(r)
+    lo, hi = _wilson(k, n)
+    assert (hist["route"]["ci_low"], hist["route"]["ci_high"]) == pytest.approx((lo, hi), abs=1e-9)
+    body = next(i for i in H.interpretation({"probability": 0.1, "risk_label": "Moderate"}, bundle, metrics, hist, ("SP", "RJ"))
+                if i["tag"] == "Observed")["body"]
+    assert f"95% CI {100 * lo:.1f}% to {100 * hi:.1f}%, n = {n:,}" in body
+    assert f"{100 * k / n * 0.9:.1f}% to {100 * k / n * 1.1:.1f}%" not in body
+
+
+def test_model_prediction_sentence_quotes_the_band_rate_of_each_window(bundle, metrics):
+    for label in ("Low", "Moderate", "High"):
+        body = H.interpretation({"probability": 0.1, "risk_label": label}, bundle, metrics, None)[0]["body"]
+        v = next(r for r in metrics["risk_bands"]["validation"] if r["band"] == label)
+        t = next(r for r in metrics["risk_bands"]["test"] if r["band"] == label)
+        assert v["late_rate"] != pytest.approx(t["late_rate"], abs=5e-4)
+        assert (f"late {100 * v['late_rate']:.1f}% of the time on the validation window (n = {v['n']:,}) "
+                f"and {100 * t['late_rate']:.1f}% on the later test window (n = {t['n']:,})") in body
+
+
+def test_result_shows_the_trust_and_band_separation_callouts():
+    at = _submit(_fresh())
+    res = at.session_state["pred_last"]["result"]
+    assert res["probability_note"]                                            # so the assertion below is not vacuous
+    html = _html(at)
+    for title in ("How much to trust this number", "Do the bands separate?", "Limitations: please read", "Read this first"):
+        assert title in html, title
+    assert res["probability_note"][:40] in html.replace("&#x27;", "'")
+
+
+def test_batch_page_ends_with_the_use_with_care_callout(downloads):
+    at = _upload([_row(order_ref="a")])
+    assert not at.exception
+    assert "Use the scores with care" in _html(at)
+    assert "Use the scores with care" not in _html(_upload([_row(customer_state="XX")]))      # nothing scored: no scores to caution about
+
+
+def test_batch_row_limit_boundary_is_inclusive(monkeypatch):
+    monkeypatch.setattr(H, "MAX_BATCH_ROWS", 2)
+    df, _ = H.parse_batch_csv(_csv([_row(), _row()]))                         # exactly the limit is fine
+    assert len(df) == 2
+    with pytest.raises(H.BatchFileError, match="3 rows"):
+        H.parse_batch_csv(_csv([_row(), _row(), _row()]))
+
+
+def test_probability_gauge_bar_colours_and_needle_position():
+    thr = {"moderate": 0.064, "high": 0.165}
+    for p in (0.019, 0.10, 0.30):
+        fig = charts.probability_gauge(p, thr)
+        bars = [t for t in fig.data if t.type == "bar"]
+        assert [b.marker.color for b in bars] == [charts.PALETTE["green"], charts.PALETTE["amber"], charts.PALETTE["red"]]
+        assert [b.base[0] for b in bars] == pytest.approx([0.0, 0.064, 0.165])
+        needle = next(s for s in fig.layout.shapes if s.type == "line")
+        assert needle.x0 == needle.x1 == pytest.approx(p)
+        marker = next(t for t in fig.data if t.type == "scatter")
+        assert marker.x[0] == pytest.approx(p)

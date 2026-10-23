@@ -28,6 +28,7 @@ st.html("""<style>
 .pred-field-err{color:#B91C1C; font-size:.82rem; font-weight:600; margin:-.55rem 0 .6rem; line-height:1.35;}
 [data-testid="stMain"] [data-testid="stFormSubmitButton"] button p, [data-testid="stMain"] button[kind="primary"] p{color:#fff !important;}
 .pred-note{color:#64748B; font-size:.82rem; line-height:1.45; margin:-.35rem 0 .6rem;}
+.diq-kpi-top{min-height:2.45rem; align-items:flex-start;}
 </style>""")
 
 df_all, _df_filtered, flt = ui.get_filtered_orders()
@@ -41,6 +42,11 @@ metrics: dict = {}
 def pills(items: list[str], warn: bool = False) -> None:
     cls = "diq-pill is-warn" if warn else "diq-pill"
     st.html('<div class="diq-pillrow">' + "".join(f'<span class="{cls}">{ui.esc(t)}</span>' for t in items) + "</div>")
+
+
+def nb(text) -> str:
+    """Dates with non-breaking hyphens so a KPI sub-label never wraps in the middle of a date."""
+    return str(text).replace("-", "\u2011")
 
 
 def bullets(lines: list[str]) -> str:
@@ -182,7 +188,7 @@ def render_result(last: dict, current_inputs: dict) -> None:
         dict(label="Predicted risk band", value=label, sublabel=f"Probability {ranges[label]}",
              icon="check" if label == "Low" else "alert", accent=BAND_ACCENT[label]),
         dict(label="Test-window late rate", value=ui.fmt_pct(t["late_rate"]) if t else ui.DASH,
-             sublabel=(f"{ui.fmt_n(t['n'])} · {t['start']} to {t['end']}" if t else "metrics file missing"),
+             sublabel=(f"{ui.fmt_n(t['n'])} · {nb(t['start'])} to {nb(t['end'])}" if t else "metrics file missing"),
              icon="bar-chart", accent="slate", help="Share of late orders in the most recent evaluation window."),
         dict(label="Observed on this route", value=ui.fmt_pct(route_h["late_rate"]) if route_h["n"] else ui.DASH,
              sublabel=(f"{seller} to {customer}, {ui.fmt_n(route_h['n'])}" if route_h["n"] else f"no orders on {seller} to {customer}"),
@@ -191,7 +197,7 @@ def render_result(last: dict, current_inputs: dict) -> None:
     st.plotly_chart(charts.probability_gauge(p, res["thresholds"]), width="stretch", key="pred_gauge", config=charts.PLOTLY_CONFIG)
 
     for w in res["warnings"]:
-        ui.callout("watch", "Outside what the model was trained on", w)
+        ui.callout("watch", "Outside what the model was trained on", H.humanise_warning(w))
     small = ui.small_sample_note(route_h["n"], config.DEFAULT_MIN_ORDERS) if route_h["n"] else None
 
     for item in H.interpretation(res, bundle, metrics, history, (seller, customer), what_if):

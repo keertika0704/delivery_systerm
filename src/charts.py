@@ -1662,7 +1662,7 @@ def pr_curve_chart(metrics: Mapping | None, model: str | None = None, *,
     fig.update_xaxes(title="Recall (share of late orders caught)", range=[0, 1], tickformat=".0%", showgrid=True, gridcolor=GRID)
     fig.update_yaxes(title="Precision (share of flagged orders that are late)", range=[0, min(1.0, ymax * 1.15)], tickformat=".0%")
     return _finish(fig, title, f"{_model_label(name, entry)}; the dotted line is what a model with no skill would achieve",
-                   height=480, legend=True, top=None)
+                   height=480, legend=True, top=None, right=44)
 
 
 def calibration_chart(metrics: Mapping | None, model: str | None = None, *,
@@ -1732,12 +1732,12 @@ def feature_importance_chart(metrics: Mapping | None, *, top_n: int = 12, window
     fig.add_trace(go.Scatter(x=d["_m"] + d["_s"], y=labels, mode="text", text=["  " + f"{abs(m) if round(m, 3) == 0 else m:.3f}" for m in d["_m"]],
                              textposition="middle right", textfont=dict(size=11, color=INK_2), hoverinfo="skip",
                              showlegend=False, cliponaxis=False))
-    fig.update_xaxes(title=f"Drop in PR-AUC when shuffled ({window} window)", range=[min(0, float(d["_m"].min()) * 1.2), xmax * 1.25],
+    fig.update_xaxes(title="Drop in PR-AUC", range=[min(0, float(d["_m"].min()) * 1.2), xmax * 1.25],
                      showgrid=True, gridcolor=GRID, showline=False, ticks="")
     fig.update_yaxes(title="Feature", autorange="reversed", categoryorder="array", categoryarray=labels, showgrid=False)
     fig.update_layout(bargap=0.35)
     n_rep = pi.get("n_repeats") if isinstance(pi, Mapping) else None
-    sub = "Permutation importance: bigger = the model's accuracy depends more on that input. Association in the model, not a cause of lateness" + \
+    sub = f"{window.capitalize()} window. Permutation importance (drop in PR-AUC when one input is shuffled): bigger = the model's accuracy depends more on that input. Association in the model, not a cause of lateness" + \
           (f" · whiskers ±1 sd over {n_rep} shuffles" if n_rep else "")
     return _finish(fig, title, sub, height=max(340, 30 * len(d) + 170), wrap=_NARROW_WRAP)
 

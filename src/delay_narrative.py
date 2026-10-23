@@ -73,6 +73,45 @@ def month_name(ym) -> str:
         return str(ym)
 
 
+def stat_text(test, x) -> str:
+    """Test statistic as readable text for the 'all tests' table: thousands separators, no significant-figure clipping.
+
+    ``%.4g`` turned U = 1,709,892,180 into 710000000 and H = 24,168 into 24170, so large statistics are shown in full
+    (rank statistics U and H as whole numbers, chi-square with one decimal, Spearman rho with three).
+    """
+    if not _ok(x):
+        return "n/a"
+    t = str(test).lower()
+    d = 3 if t == "spearman" else 1 if "chi" in t else 0
+    return f"{float(x):,.{d}f}"
+
+
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+                "November", "December"]
+_ROUTE_LABELS = {"0": "Different states", "1": "Same state"}
+
+
+def level_label(col, level) -> str:
+    """Plain label for one level of a chi-square / group variable ('1' of same_state -> 'Same state', '3' of purchase_month -> 'March')."""
+    s = str(level)
+    if col == "same_state":
+        return _ROUTE_LABELS.get(s, s)
+    if col == "purchase_month":
+        try:
+            return _MONTH_NAMES[int(float(s)) - 1]
+        except (ValueError, IndexError):
+            return s
+    if col == "product_category":
+        return cat_name(s)
+    return s
+
+
+def relabel_reading(text: str, col, top_level) -> str:
+    """Replace the quoted raw level in plain_language's 'departs most from independence is 'X'' sentence by its label."""
+    raw, lab = f"is '{top_level}' (", f"is '{level_label(col, top_level)}' ("
+    return str(text).replace(raw, lab, 1)
+
+
 def plural(n, singular: str, plural_form: str | None = None) -> str:
     """``'1 month'`` / ``'3 months'`` (``plural_form`` for irregular nouns such as category / categories)."""
     k = int(n)
@@ -316,6 +355,11 @@ def category_observed(perf: pd.DataFrame, overall_rate: float, min_orders: int,
     if rel.empty:
         return (f"No named category has {min_orders:,} or more orders in this view ({plural(len(p), 'category', 'categories')} shown in the table "
                 "are all small samples), so none is ranked. Lower the minimum or widen the filters.", None, empty, empty)
+    if len(rel) == 1:     # nothing to compare: a "range" from a category to itself would be degenerate prose
+        only = rel.iloc[0]
+        return (f"Only one category ({cat_name(only['product_category'])}) has at least {min_orders:,} orders in this view "
+                f"(late rate {pct(only['late_rate'])}, {n_(only['n_orders'])}, against {pct(overall_rate)} overall), so "
+                "categories cannot be compared. Widen the filters or lower the minimum to compare categories.", None, empty, empty)
     top = rel.sort_values(["late_rate", "n_orders"], ascending=[False, False], kind="mergesort").iloc[0]
     bot = rel.sort_values(["late_rate", "n_orders"], ascending=[True, False], kind="mergesort").iloc[0]
     longest = rel.sort_values("mean_duration", ascending=False, kind="mergesort").iloc[0]
@@ -328,8 +372,9 @@ def category_observed(perf: pd.DataFrame, overall_rate: float, min_orders: int,
            f"R$ {num(costly['mean_freight'], 2)} per order ({cat_name(costly['product_category'])}, {n_(costly['n_orders'])}).")
     hi = an.high_delay_segments(rel, min_orders, overall_rate, alpha, "high")
     lo = an.high_delay_segments(rel, min_orders, overall_rate, alpha, "low")
+    # every flagged category is counted: the first four are named, the rest are summarised as "and N more"
     names = lambda d: _join([f"{cat_name(r['product_category'])} ({pct(r['late_rate'])}, {n_(r['n_orders'])})"
-                             for _, r in d.head(4).iterrows()], 4)
+                             for _, r in d.iterrows()], 4)
     chance = len(rel) * alpha / 2
     ncat = plural(len(rel), "category", "categories")
     if hi.empty:
@@ -340,19 +385,25 @@ def category_observed(perf: pd.DataFrame, overall_rate: float, min_orders: int,
                  f"overall rate: {names(hi)}. The intervals are not adjusted for screening {ncat}; even if no category truly "
                  f"differed, about {chance:.1f} would be expected to be flagged high by chance, so treat borderline ones as leads.")
     if not lo.empty:
-        assoc += f" Reliably below average: {names(lo)}."
+        assoc += f" Reliably below average ({len(lo)}): {names(lo)}."
     return obs, assoc, hi, lo
 
 
-def category_action(hi: pd.DataFrame, ranked: bool = True) -> str:
-    """Suggested step for the category tab; ``ranked`` is False when no category had enough orders to be compared."""
+def category_action(hi: pd.DataFrame, ranked: bool = True, n_compared: int | None = None) -> str:
+    """Suggested step for the category tab; ``ranked`` is False when no category had enough orders to be compared.
+
+    ``n_compared`` (optional) is the number of named categories with enough orders; exactly one means there is nothing to compare.
+    """
+    if n_compared == 1:
+        return ("Only one category in this view, so categories cannot be compared and no category-level action follows. "
+                "Widen the filters to compare categories.")
     if not ranked:
         return ("This view has no category with enough orders to compare, so no category-level conclusion is possible. "
                 "Widen the filters or lower the minimum number of orders.")
     if hi is None or hi.empty:
         return ("No category is reliably above average, so category-specific action is not supported by this view. "
                 "Check regional and seasonal patterns first.")
-    names = _join([cat_name(c) for c in hi["product_category"]], 3)
+    names = _join([cat_name(c) for c in hi["product_category"]], 4)
     return (f"For {names}, check which sellers and routes supply these orders, how long hand-over to the carrier takes and whether "
             "the delivery promise shown at checkout is realistic for them. Category effects here are confounded with seller "
             "location, weight and region, so confirm with a like-for-like comparison before changing anything.")

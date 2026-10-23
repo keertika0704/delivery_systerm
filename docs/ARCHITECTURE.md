@@ -252,6 +252,14 @@ then `pg.run()`. Pages: `1_Overview.py`, `2_Delay_Analysis.py`, `3_Regional_Inte
 `4_Delay_Prediction.py`, `5_Reports_Insights.py`. Pages call a shared helper in `ui.py` to obtain the
 filtered frame so filters apply consistently.
 
+*Known Streamlit 1.66 quirks of deep links (not bugs in the page code).* (1) Because a `pages/` directory exists, Streamlit
+runs the very first session after server start through its legacy multipage path, which registers the pages under their
+file names (`Delay_Analysis`) before `app.py` calls `st.navigation`; a deep link such as `/delay-analysis` as the first
+connection therefore shows a dismissible "Page not found" dialog over the correctly rendered page. Later sessions are
+unaffected (`st.navigation` switches the legacy path off). Avoiding it would need the directory to be renamed. (2) The
+default page is always served at `/`; its `url_path="overview"` is ignored, so `/overview` is "Page not found" by design.
+The 404s for `/<page>/_stcore/health` in the browser console are the frontend probing base paths and are harmless.
+
 ## 4. Quality rules (apply to every module)
 
 * No placeholder or random numbers anywhere; every displayed statistic is computed from the data/model.

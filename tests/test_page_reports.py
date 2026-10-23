@@ -448,3 +448,218 @@ def test_model_evaluation_tab_callout_carries_the_honesty_wording():
     page = plain(at)
     assert "Read this first: a modest signal, not an accurate predictor" in page          # Model evaluation tab callout title
     assert "never as a reliable forecast of an individual order" in page
+
+
+# --------------------------------------------------------------------------- #
+# Review round: what is really downloaded must follow the filters and settings (bytes, not button labels)
+# --------------------------------------------------------------------------- #
+import io  # noqa: E402
+
+from src import charts  # noqa: E402
+from src import insights as ins_mod  # noqa: E402
+
+
+@pytest.fixture
+def grabbed(monkeypatch):
+    """Bytes handed to every st.download_button (callables are evaluated), by widget key, plus the figures exported."""
+    got: dict[str, bytes] = {}
+    figs: list = []
+    real = st.download_button
+
+    def spy(label, data=None, *a, **k):
+        got[k.get("key") or label] = data() if callable(data) else data
+        return real(label, data, *a, **k)
+
+    real_html = charts.figure_to_html_bytes
+
+    def spy_html(fig, *a, **k):
+        figs.append(fig)
+        return real_html(fig, *a, **k)
+
+    monkeypatch.setattr(st, "download_button", spy)
+    monkeypatch.setattr(charts, "figure_to_html_bytes", spy_html)
+    got["_figs"] = figs
+    return got
+
+
+def csv_of(data: bytes) -> pd.DataFrame:
+    return pd.read_csv(io.BytesIO(data), encoding="utf-8-sig")
+
+
+def test_downloaded_shipment_csv_contains_only_the_filtered_orders(orders, grabbed):
+    at = run({ui.K_STATES: ["SP"], ui.K_CATEGORIES: ["health_beauty"]})
+    no_exception(at)
+    sub = orders[(orders.customer_state == "SP") & (orders.product_category == "health_beauty")]
+    out = csv_of(grabbed["rep_dl_ship_btn"])
+    assert len(out) == len(sub) and len(out) < len(orders)
+    assert set(out["order_id"]) == set(sub["order_id"])
+    assert set(out["customer_state"]) == {"SP"} and set(out["product_category"]) == {"health_beauty"}
+    assert not {"customer_id", "seller_id", "customer_unique_id"} & set(out.columns)
+
+
+def test_downloaded_regional_csv_and_table_follow_min_orders_and_confidence(orders, grabbed):
+    at = run()
+    at.slider(key="rep_min_orders").set_value(1000).run()
+    at.selectbox(key="rep_confidence").set_value(0.99).run()
+    no_exception(at)
+    exp = ins_mod.regional_report(orders, 1000, 0.01)
+    base = ins_mod.regional_report(orders, 100, 0.05)
+    assert exp["reliable"].tolist() != base["reliable"].tolist()          # the settings do change the report
+    out = csv_of(grabbed["rep_dl_region_btn"])
+    table = [d.value for d in at.dataframe if "state_name" in d.value.columns][0]
+    for got in (out, table):
+        assert got["customer_state"].tolist() == exp["customer_state"].tolist()
+        assert got["reliable"].tolist() == exp["reliable"].tolist()
+        assert got["late_ci_low"].tolist() == pytest.approx(exp["late_ci_low"].tolist(), abs=1e-6)
+        assert got["late_ci_high"].tolist() == pytest.approx(exp["late_ci_high"].tolist(), abs=1e-6)
+    assert out["flag"].tolist() == exp["flag"].tolist()
+
+
+def test_downloaded_summary_uses_the_selected_confidence_level(orders, grabbed):
+    at = run()
+    at.selectbox(key="rep_confidence").set_value(0.99).run()
+    no_exception(at)
+    k = an.kpi_summary(orders)
+    lo, hi = an.wilson_ci(k["n_late"], k["n_orders"], 0.01)
+    line = f"99% CI {100 * lo:.1f}% to {100 * hi:.1f}%"
+    md = grabbed["rep_dl_md_btn"].decode("utf-8")
+    html_doc = grabbed["rep_dl_html_btn"].decode("utf-8")
+    assert line in md and line in html_doc
+    assert "interval lies entirely above" in md and "99% interval lies entirely above" in md
+    assert "95% interval lies entirely above" not in md
+    at.selectbox(key="rep_confidence").set_value(0.95).run()
+    lo95, hi95 = an.wilson_ci(k["n_late"], k["n_orders"], 0.05)
+    assert f"95% CI {100 * lo95:.1f}% to {100 * hi95:.1f}%" in grabbed["rep_dl_md_btn"].decode("utf-8")
+
+
+def test_exported_chart_follows_min_orders_and_is_drawn_at_95_percent(orders, grabbed):
+    at = run()
+    at.selectbox(key="rep_dl_chart_choice").set_value("Late rate by customer state").run()
+    at.slider(key="rep_min_orders").set_value(1000).run()
+    at.selectbox(key="rep_confidence").set_value(0.99).run()          # must NOT change the chart: it is labelled 95%
+    no_exception(at)
+    k = an.kpi_summary(orders)
+    exp = charts.state_late_rate_bar(an.state_performance(orders, 1000, alpha=0.05), min_orders=1000, overall_rate=k["late_rate"])
+    loose = charts.state_late_rate_bar(an.state_performance(orders, 100, alpha=0.05), min_orders=100, overall_rate=k["late_rate"])
+    assert exp.to_json() != loose.to_json()
+    assert json.loads(grabbed["_figs"][-1].to_json()) == json.loads(exp.to_json())
+    spec = re.sub(r"(<br>|\s)+", " ", grabbed["_figs"][-1].to_json())            # wording of the exported (= previewed) chart
+    assert "95% Wilson interval" in spec and "99%" not in spec
+    assert "Charts always use 95% intervals" in plain(at)
+
+
+def test_explorer_all_matching_download_has_every_row_not_just_the_page(orders, grabbed):
+    at = run({ui.K_STATES: ["SP", "RJ"]})
+    at.radio(key="rep_ex_status").set_value("Late").run()
+    no_exception(at)
+    exp = orders[orders.customer_state.isin(["SP", "RJ"]) & (orders.is_late == 1)]
+    assert len(exp) > 50
+    allrows = csv_of(grabbed["rep_ex_dl_all"])
+    page = csv_of(grabbed["rep_ex_dl_page"])
+    assert len(allrows) == len(exp) and set(allrows["order_id"]) == set(exp["order_id"])
+    assert len(page) == 50 and set(page["order_id"]) <= set(exp["order_id"])
+    assert page["order_id"].tolist() == allrows["order_id"].tolist()[:50]          # same sort order, page is the first slice
+
+
+# --------------------------------------------------------------------------- #
+# Review round: wording and numbers that must come from the data, element by element
+# --------------------------------------------------------------------------- #
+def callout_html(at: AppTest, title_part: str) -> str:
+    found = [str(e.value) for e in at.get("html") if "diq-callout" in str(e.value) and title_part in str(e.value)]
+    assert len(found) == 1, (title_part, len(found))
+    return squash(_html.unescape(re.sub(r"<[^>]+>", " ", found[0])))
+
+
+@pytest.mark.skipif(not config.MODEL_METRICS_PATH.is_file(), reason="model metrics missing")
+def test_model_tab_callout_itself_carries_the_honesty_wording():
+    at = run()
+    no_exception(at)
+    text = callout_html(at, "Read this first")
+    assert "not an accurate predictor" in text
+    assert "never as a reliable forecast of an individual order" in text
+    assert "rough screening aid" in text
+
+
+@pytest.mark.skipif(not config.MODEL_METRICS_PATH.is_file(), reason="model metrics missing")
+def test_split_callout_quotes_train_validation_test_rates_in_order():
+    m = json.loads(config.MODEL_METRICS_PATH.read_text(encoding="utf-8"))
+    r = {w: f"{100 * m['split'][w]['late_rate']:.1f}%" for w in ("train", "validation", "test")}
+    assert len(set(r.values())) == 3                     # distinct rates, so a swap would be visible
+    at = run()
+    text = callout_html(at, "Why the late rate differs between windows")
+    assert f"The late rate is {r['train']} in training, {r['validation']} in validation and {r['test']} in test" in text
+
+
+@pytest.mark.parametrize("conf", [0.90, 0.95, 0.99])
+def test_late_rate_kpi_interval_uses_the_selected_confidence(orders, conf):
+    at = run({ui.K_STATES: ["SP"]})
+    at.selectbox(key="rep_confidence").set_value(conf).run()
+    no_exception(at)
+    sub = orders[orders.customer_state == "SP"]
+    k = an.kpi_summary(sub)
+    lo, hi = an.wilson_ci(k["n_late"], k["n_orders"], round(1 - conf, 4))
+    _, sublabel = kpi(at, "Late rate")
+    assert f"{conf:.0%} interval {100 * lo:.1f}% to {100 * hi:.1f}%" in sublabel
+
+
+def test_observed_strip_does_not_promise_an_interval_on_every_card():
+    at = run()
+    text = plain(at)
+    assert "always with n; rates also carry a confidence interval" in text
+    assert "always with n and an interval" not in text
+
+
+def test_single_state_view_has_no_vacuous_regional_comparison(orders):
+    at = run({ui.K_STATES: ["SE"]})
+    no_exception(at)
+    text = cards_text(at)
+    assert "1 regions" not in text and "None of the 1" not in text
+    assert "No region reliably above" not in text
+    assert "regional comparison (only one region in view)" in text            # listed as skipped instead
+    # with several states the regional card is still there
+    assert "regions with n >= " in cards_text(run({ui.K_STATES: ["SP", "RJ", "MG"]}))
+
+
+def test_mean_delivery_kpi_has_no_dangling_dash_when_nothing_is_late(orders):
+    at = run({ui.K_STATES: ["AP"], ui.K_CATEGORIES: ["health_beauty"]})
+    no_exception(at)
+    sub = orders[(orders.customer_state == "AP") & (orders.product_category == "health_beauty")]
+    assert len(sub) > 0 and int(sub.is_late.sum()) == 0                     # the scenario of the review
+    _, sublabel = kpi(at, "Mean delivery time")
+    assert "no late orders in view" in sublabel and ui.DASH not in sublabel and "after the estimate" not in sublabel
+    # and with late orders the sentence is complete
+    _, sub_all = kpi(run(), "Mean delivery time")
+    assert "late orders arrive" in sub_all and "after the estimate on average" in sub_all
+
+
+def test_analysis_settings_survive_a_visit_to_another_page():
+    """Streamlit drops a widget's value when its page is not drawn.  The page mirrors the settings into a plain session
+    entry (rep__kept) and restores them before the widgets exist; check both halves."""
+    at = run()
+    at.slider(key="rep_min_orders").set_value(200).run()
+    at.selectbox(key="rep_confidence").set_value(0.99).run()
+    at.toggle(key="rep_only_flagged").set_value(True).run()
+    at.selectbox(key="rep_dl_chart_choice").set_value("Late rate by product category").run()
+    no_exception(at)
+    kept = dict(at.session_state["rep__kept"])
+    assert kept["rep_min_orders"] == 200 and kept["rep_confidence"] == 0.99
+    assert kept["rep_only_flagged"] is True and kept["rep_dl_chart_choice"] == "Late rate by product category"
+    # coming back: a fresh session in which only the plain mirror survived (all widget entries are gone)
+    back = run({"rep__kept": kept})
+    no_exception(back)
+    assert back.slider(key="rep_min_orders").value == 200
+    assert back.selectbox(key="rep_confidence").value == 0.99
+    assert back.toggle(key="rep_only_flagged").value is True
+    assert back.selectbox(key="rep_dl_chart_choice").value == "Late rate by product category"
+    assert "99% interval" in plain(back) and "at least 200 delivered orders" in plain(back)
+
+
+@pytest.mark.skipif(not config.MODEL_METRICS_PATH.is_file(), reason="model metrics missing")
+def test_pr_curve_leaves_room_for_the_last_tick_label():
+    at = run()
+    specs = [json.loads(e.proto.spec) for e in at.get("plotly_chart")]
+    pr = next(s for s in specs if s["layout"]["title"]["text"].startswith("Precision-recall curve"))
+    assert pr["layout"]["margin"]["r"] >= 40
+    cal = next(s for s in specs if s["layout"]["title"]["text"].startswith("Calibration"))
+    assert cal["layout"]["yaxis"].get("scaleanchor") == "x"                 # square plot: paired with its explanation, not alone
+    assert "How to read the curves" in html(at)

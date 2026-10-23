@@ -351,3 +351,46 @@ def test_honest_summary_wording_flips_when_the_model_beats_the_base_rate(metrics
     assert "Probabilities are not better than the base rate" not in pts
     del m["split"]["train"]["late_rate"]                                      # incomplete split info: no drift claim
     assert "Drift between windows" not in " ".join(exports.honest_summary(m))
+
+
+# --------------------------------------------------------------------------- #
+# comparable_insights: a single region cannot be compared with itself
+# --------------------------------------------------------------------------- #
+@needs_data
+def test_comparable_insights_replaces_the_one_region_card_with_a_data_note(orders):
+    sub = orders[orders.customer_state == "SE"]
+    raw = ins.generate_insights(sub, 100, 0.05)
+    vac = [i for i in raw if i.kind == "region_high"]
+    assert vac and "1 regions" in vac[0].text                      # the raw finding is the vacuous one
+    out = exports.comparable_insights(raw, 100)
+    assert not [i for i in out if i.kind == "region_high"]
+    notes = [i for i in out if i.kind == "insufficient_data"]
+    assert len(notes) == 1 and exports.SINGLE_REGION_SECTION in notes[0].metrics["sections"]
+    assert exports.SINGLE_REGION_SECTION in notes[0].text and "1 regions" not in " ".join(i.text for i in out)
+    # the region card is merged into the (already present) data note; every other finding is untouched
+    assert len(out) == len(raw) - 1
+    assert [i for i in raw if i.kind not in ("region_high", "insufficient_data")] == \
+           [i for i in out if i.kind != "insufficient_data"]
+
+
+@needs_data
+def test_comparable_insights_leaves_a_multi_region_view_untouched(orders):
+    raw = ins.generate_insights(orders, 100, 0.05)
+    out = exports.comparable_insights(raw, 100)
+    assert out == raw and out is not raw
+    # two states are enough for a comparison
+    two = orders[orders.customer_state.isin(["SP", "RJ"])]
+    raw2 = ins.generate_insights(two, 100, 0.05)
+    assert exports.comparable_insights(raw2, 100) == raw2
+
+
+def test_comparable_insights_adds_the_note_when_none_exists_and_is_idempotent():
+    over = ins.Insight("overview", "Overview", "x", {}, 500)
+    vac = ins.Insight("region_high", "No region reliably above", "None of the 1 regions", {"n_screened": 1, "n_flagged": 0}, 500)
+    out = exports.comparable_insights([over, vac], 100)
+    assert [i.kind for i in out] == ["overview", "insufficient_data"] and out[1].n == 500
+    assert out[1].metrics["sections"] == [exports.SINGLE_REGION_SECTION]
+    assert exports.comparable_insights(out, 100) == out
+    # a flagged region is never hidden
+    flagged = ins.Insight("region_high", "Region above", "AL is higher", {"n_screened": 1, "n_flagged": 1}, 500)
+    assert exports.comparable_insights([over, flagged], 100) == [over, flagged]

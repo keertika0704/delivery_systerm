@@ -340,8 +340,13 @@ def test_category_observed_pluralises_and_uses_half_alpha_chance_count(orders):
     _, assoc, hi, _ = nar.category_observed(perf, overall, 100)
     assert f"about {len(rel) * 0.05 / 2:.1f} would be expected" in assoc      # one-sided: n * alpha / 2
     one = perf[perf["product_category"] == perf.sort_values("n_orders").iloc[-1]["product_category"]]
-    o, a, _, _ = nar.category_observed(one, overall, 100)
-    assert "1 categories" not in o + a and "1 category" in o
+    o, a, h1, l1 = nar.category_observed(one, overall, 100)
+    # a single reliable category cannot be compared with anything: no "ranges from X to X" prose, no association claim
+    assert "Only one category" in o and "cannot be compared" in o and "ranges from" not in o
+    assert a is None and h1.empty and l1.empty
+    two = perf[perf["product_category"].isin(perf.sort_values("n_orders").iloc[-2:]["product_category"])]
+    o2, a2, _, _ = nar.category_observed(two, overall, 100)
+    assert "Among 2 categories" in o2 and "1 categories" not in o2 + (a2 or "")
 
 
 def test_sparse_caveat_joins_years_with_and():
@@ -784,3 +789,287 @@ def test_state_duration_bar_max_small_draws_all_small_states_or_counts_the_hidde
     capped = charts.state_duration_bar(sp, top_n=20, min_orders=100)
     assert drawn(capped) == 2 + 6                                   # old cap max(3, 20 // 3) = 6 small states
     assert "12 segments with n < 100 hidden" in capped.layout.title.subtitle.text
+
+
+# --------------------------------------------------------------------------- #
+# Second review round: statistic formatting, table layout, narrative counts, single category, level labels
+# --------------------------------------------------------------------------- #
+def test_stat_text_keeps_large_statistics_whole():
+    assert nar.stat_text("mann_whitney", 1709892180.5) == "1,709,892,180"       # %.4g printed 710000000
+    assert nar.stat_text("kruskal", 24168.31) == "24,168"
+    assert nar.stat_text("chi-square", 1782.376) == "1,782.4"
+    assert nar.stat_text("spearman", 0.08697838) == "0.087" and nar.stat_text("spearman", -0.02514) == "-0.025"
+    assert nar.stat_text("spearman", np.nan) == "n/a" and nar.stat_text("chi-square", None) == "n/a"
+
+
+@needs_data
+def test_glance_table_statistics_agree_with_the_cards_and_are_not_clipped(orders):
+    from src import statistical_analysis as sa
+    at = run_page()
+    t = frame_with(at, "Holm-adjusted p")
+    res = sa.run_all_tests(orders)
+    stat = dict(zip(t["Variables"], t["Statistic"]))
+    u = res["group_comparison"]["delivery_duration_days~same_state"]["statistic"]
+    h = res["group_comparison"]["delivery_duration_days~customer_state"]["statistic"]
+    chi = res["chi_square"]["customer_state"]["chi2"]
+    assert stat["delivery time by same-state route"] == f"{u:,.0f}" == "1,709,892,180"
+    assert stat["delivery time by customer state"] == f"{h:,.0f}"
+    assert stat["customer state x late delivery"] == f"{chi:,.1f}"
+    assert stat["order weight ~ delivery time"] == f"{res['spearman']['total_weight_g~delivery_duration_days']['rho']:.3f}"
+    txt = text_of(page_html(at))
+    # the same numbers appear on the cards below the table
+    assert f"U = {u:,.0f}" in txt and f"H = {h:,.0f}" in txt and f"chi-square = {chi:,.1f}" in txt
+
+
+@needs_data
+def test_wide_tables_fit_at_1440px_and_keep_the_key_flags_next_to_their_values():
+    at = run_page()
+    for column, last_col in (("Holm-adjusted p", "n"), ("Freight / price (%)", "Reliable")):
+        el = next(d for d in at.dataframe if column in d.value.columns)
+        cfg = json.loads(el.proto.columns)
+        cols = list(el.value.columns)
+        assert cols[-1] == last_col
+        widths = [cfg[c]["width"] for c in cols]
+        assert all(isinstance(w, int) for w in widths), widths          # explicit pixel widths, no "large" columns
+        assert sum(widths) <= 1080, sum(widths)                          # content width of a 1440 px window with the sidebar open
+    glance = frame_with(at, "Holm-adjusted p")
+    cols = list(glance.columns)
+    assert cols.index("Significant after Holm") == cols.index("Holm-adjusted p") + 1      # the flag sits next to its p-value
+
+
+@needs_data
+def test_category_flag_lists_name_four_and_count_the_rest(orders):
+    perf = an.category_performance(orders, 100)
+    overall = an.kpi_summary(orders)["late_rate"]
+    _, assoc, hi, lo = nar.category_observed(perf, overall, 100)
+    assert len(hi) > 4 and len(lo) > 4
+    assert f"and {len(hi) - 4} more" in assoc and f"Reliably below average ({len(lo)})" in assoc
+    assert f"and {len(lo) - 4} more" in assoc
+    named = sum(nar.cat_name(c) in assoc for c in hi["product_category"])
+    assert named == 4                                                    # four named, the remainder only counted
+    act = nar.category_action(hi)
+    assert f"and {len(hi) - 4} more" in act                              # same four + same remainder as the association note
+    for c in list(hi["product_category"])[:4]:
+        assert nar.cat_name(c) in act
+    # the page shows the same sentence
+    assert f"and {len(hi) - 4} more" in text_of(page_html(run_page()))
+
+
+@needs_data
+def test_single_reliable_category_view_says_nothing_can_be_compared():
+    at = run_page(categories=["health_beauty"])
+    assert not at.exception
+    txt = text_of(page_html(at))
+    assert "Only one category (Health beauty) has at least 100 orders" in txt and "cannot be compared" in txt
+    assert "ranges from" not in txt and "Reliably below average" not in txt
+    assert "No category is reliably above average" not in txt             # the old degenerate advice
+    keys = {e.key for e in at.get("plotly_chart")}
+    assert not {"da_cat_late", "da_cat_dur", "da_cat_freight"} & keys    # no one-bar rankings
+    assert len(frame_with(at, "Category")) == 1                          # the table still lists the category
+    # the shipping-cost choice is remembered although its radio is not drawn here
+    base = run_page()
+    base.radio(key="da_cat_fmetric").set_value("Freight as % of item price").run()
+    base.session_state[ui.K_CATEGORIES] = ["health_beauty"]
+    base.run()
+    assert not base.exception
+    base.session_state[ui.K_CATEGORIES] = []
+    base.run()
+    assert base.radio(key="da_cat_fmetric").value == "Freight as % of item price"
+
+
+def test_category_action_for_exactly_one_compared_category():
+    txt = nar.category_action(pd.DataFrame(), ranked=True, n_compared=1)
+    assert "Only one category" in txt and "not supported" not in txt and "no category-level conclusion" not in txt
+    assert "not supported" in nar.category_action(pd.DataFrame(), ranked=True, n_compared=5)
+
+
+def test_level_labels_and_relabelled_reading():
+    assert nar.level_label("same_state", "0") == "Different states" and nar.level_label("same_state", 1) == "Same state"
+    assert nar.level_label("purchase_month", "3") == "March" and nar.level_label("purchase_month", "12") == "December"
+    assert nar.level_label("purchase_month", "x") == "x" and nar.level_label("customer_state", "SP") == "SP"
+    assert nar.level_label("product_category", "health_beauty") == "Health beauty"
+    txt = "The level that departs most from independence is '0' (late rate 8.0%, n = 61,774)."
+    assert nar.relabel_reading(txt, "same_state", "0") == txt.replace("'0'", "'Different states'")
+
+
+@needs_data
+def test_chi_square_readings_and_level_tables_show_labels_not_codes():
+    at = run_page()
+    txt = text_of(" ".join(str(m.value) for e in at.expander for m in e.markdown))       # the readings sit inside expanders
+    assert "departs most from independence is 'Different states'" in txt
+    assert re.search(r"departs most from independence is '(January|February|March|April|May|June|July|August|September|October|"
+                     r"November|December)'", txt)
+    assert not re.search(r"departs most from independence is '\d+'", txt)
+    levels = [set(d.value["Level"]) for d in at.dataframe if "Adjusted residual" in d.value.columns]
+    assert len(levels) == 4
+    flat = set().union(*levels)
+    assert {"Different states", "Same state"} <= flat and not {"0", "1"} & flat
+    months = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"}
+    assert any(s <= months for s in levels)
+    groups = [d.value for d in at.dataframe if "Group" in d.value.columns]
+    assert any(set(g["Group"]) == {"Different states", "Same state"} for g in groups)
+
+
+# --- coverage gaps found by mutation testing ---------------------------------------------
+@needs_data
+@pytest.mark.parametrize("route,mask", [("All orders", None), ("Same state (seller and customer)", 1), ("Different states", 0)])
+def test_route_selector_filters_orders_and_weight_caption(orders, route, mask):
+    at = run_page()
+    at.selectbox(key="da_wf_route").set_value(route).run()
+    assert not at.exception
+    d = orders if mask is None else orders[orders["same_state"] == mask]
+    cap = next(c.value for c in at.caption if "orders without a usable weight" in str(c.value))
+    assert f"{len(d):,} orders" in cap and f"overall late rate {100 * d['is_late'].mean():.1f}%" in cap
+    assert f"{int(d['total_weight_g'].isna().sum()):,} orders without a usable weight" in cap
+    # the correlations on the page are computed on the selected orders as well
+    from scipy import stats as st_
+    rho = st_.spearmanr(d["total_weight_g"], d["delivery_duration_days"], nan_policy="omit")[0]
+    assert f"order weight with delivery time: rho = {rho:.2f}" in text_of(page_html(at))
+    assert f"n = {int(d['total_weight_g'].notna().sum()):,}" in text_of(page_html(at))
+
+
+@needs_data
+def test_freight_ratio_late_correlation_uses_the_freight_ratio_column(orders):
+    from scipy import stats as st_
+    at = run_page()
+    at.selectbox(key="da_wf_route").set_value("Same state (seller and customer)").run()
+    d = orders[orders["same_state"] == 1]
+    ratio = st_.spearmanr(d["freight_ratio"], d["is_late"], nan_policy="omit")[0]
+    freight = st_.spearmanr(d["total_freight"], d["is_late"])[0]
+    assert f"{ratio:.2f}" != f"{freight:.2f}"                          # the check is able to tell the two variables apart
+    assert f"freight-to-price ratio with being late (0/1): rho = {ratio:.2f}" in text_of(page_html(at))
+
+
+@needs_data
+def test_scatter_overlay_is_drawn_only_when_switched_on():
+    at = run_page()
+    assert not any("Sampled order" in str(t.get("name")) for t in fig_of(at, "da_w_dur")["data"])
+    assert not any("Sampled order" in str(t.get("name")) for t in fig_of(at, "da_f_dur")["data"])
+    at.checkbox(key="da_wf_scatter").set_value(True).run()
+    for key in ("da_w_dur", "da_f_dur"):
+        names = [str(t.get("name")) for t in fig_of(at, key)["data"]]
+        assert "Sampled order: on time" in names and "Sampled order: late" in names, key
+    at.checkbox(key="da_wf_scatter").set_value(False).run()
+    assert not any("Sampled order" in str(t.get("name")) for t in fig_of(at, "da_w_dur")["data"])
+
+
+@needs_data
+def test_min_orders_boundary_keeps_a_category_with_exactly_that_many_orders(orders):
+    n = int((orders["product_category"] == "home_confort").sum())
+    assert n % 10 == 0 and 10 <= n <= 1000                               # reachable with the slider (step 10)
+    at = run_page(min_orders=n)
+    t = frame_with(at, "Category")
+    assert "Home confort" in set(t["Category"]) and (t["Orders (n)"] >= n).all() and t["Reliable"].all()
+    sizes = orders["product_category"].value_counts()
+    named = sizes[sizes.index != "unknown"]
+    assert len(t) == int((named >= n).sum())
+    at2 = run_page(min_orders=n + 10)
+    assert "Home confort" not in set(frame_with(at2, "Category")["Category"])
+    # the bar charts apply the same rule (>= n)
+    assert any("Home confort" in str(y) for y in bar_labels(fig_of(at, "da_cat_late")))
+
+
+@needs_data
+def test_category_table_late_orders_column_and_sort_options(orders):
+    at = run_page()
+    t = frame_with(at, "Category")
+    late = orders.groupby("product_category")["is_late"].agg(["size", "sum", "mean"])
+    late.index = [ui.category_label(c) for c in late.index]
+    for _, r in t.iterrows():
+        assert r["Late orders"] == late.loc[r["Category"], "sum"] and r["Orders (n)"] == late.loc[r["Category"], "size"]
+    named = orders[orders["product_category"] != "unknown"]
+    g = named.groupby("product_category").agg(n=("is_late", "size"), days=("delivery_duration_days", "mean"),
+                                              freight=("total_freight", "mean"))
+    g = g[g["n"] >= 100]
+    expected_first = {"Orders (most first)": g["n"].idxmax(), "Mean delivery time (longest first)": g["days"].idxmax(),
+                      "Mean freight (highest first)": g["freight"].idxmax()}
+    for option, code in expected_first.items():
+        at.selectbox(key="da_cat_sort").set_value(option).run()
+        t = frame_with(at, "Category")
+        assert t.iloc[0]["Category"] == ui.category_label(code), option
+        assert len(t) == len(g)
+    at.selectbox(key="da_cat_sort").set_value("Orders (most first)").run()
+    t = frame_with(at, "Category")
+    assert list(t["Orders (n)"]) == sorted(t["Orders (n)"], reverse=True)
+    at.selectbox(key="da_cat_sort").set_value("Category name").run()
+    t = frame_with(at, "Category")
+    assert list(t["Category"]) == [ui.category_label(c) for c in sorted(g.index)]
+
+
+@needs_data
+def test_csv_download_is_the_full_table_on_screen():
+    from io import BytesIO
+    from streamlit.runtime.memory_media_file_storage import MemoryMediaFileStorage as Storage
+    captured: list[bytes] = []
+    original = Storage.load_and_get_id
+
+    def spy(self, path_or_data, *args, **kwargs):
+        if isinstance(path_or_data, bytes):
+            captured.append(path_or_data)
+        return original(self, path_or_data, *args, **kwargs)
+
+    Storage.load_and_get_id = spy
+    try:
+        at = run_page()
+        at.selectbox(key="da_cat_sort").set_value("Category name").run()
+    finally:
+        Storage.load_and_get_id = original
+    t = frame_with(at, "Category")
+    csv = pd.read_csv(BytesIO(captured[-1]))
+    assert list(csv.columns) == list(t.columns) and len(csv) == len(t) > 20
+    assert list(csv["Category"]) == list(t["Category"])                 # the download follows the chosen sort
+    assert list(csv["Orders (n)"]) == list(t["Orders (n)"]) and list(csv["Late orders"]) == list(t["Late orders"])
+    np.testing.assert_allclose(csv["Late rate (%)"], t["Late rate (%)"])
+
+
+@needs_data
+@pytest.mark.parametrize("stat,col", [("Mean", "mean"), ("Median", "median")])
+@pytest.mark.parametrize("order", ["Longest", "Shortest"])
+def test_duration_chart_respects_statistic_and_order_radios(orders, stat, col, order):
+    g = orders[orders["product_category"] != "unknown"].groupby("product_category")["delivery_duration_days"].agg(["size", "mean", "median"])
+    g = g[g["size"] >= 100][col].sort_values(ascending=(order == "Shortest"))
+    at = run_page()
+    at.radio(key="da_dur_stat").set_value(stat).run()
+    at.radio(key="da_dur_order").set_value(order).run()
+    assert not at.exception
+    bar = next(t for t in fig_of(at, "da_dur_cat_chart")["data"] if t.get("type") == "bar")
+    got = sorted(float(v) for v in dec(bar["x"]))
+    assert len(got) == 15
+    np.testing.assert_allclose(got, sorted(g.head(15).to_numpy()), rtol=1e-9)
+    # the state chart and the sentence follow the same radios
+    word = stat.lower()
+    assert f"{word} delivery time runs from" in text_of(page_html(at))
+
+
+@needs_data
+def test_flagged_months_table_difference_is_in_percentage_points(orders):
+    at = run_page()
+    t = frame_with(at, "Adjusted p")
+    assert len(t) > 0
+    for _, r in t.iterrows():
+        month = pd.Timestamp(r["Month"]).strftime("%Y-%m")
+        in_m = orders["purchase_year_month"] == month
+        rate, rest = orders.loc[in_m, "is_late"].mean(), orders.loc[~in_m, "is_late"].mean()
+        assert r["Other months (%)"] == pytest.approx(100 * rest)
+        assert r["Difference (pp)"] == pytest.approx(100 * (rate - rest))      # percentage points, not a fraction
+        assert r["CI low (pp)"] < r["Difference (pp)"] < r["CI high (pp)"]
+        assert r["Difference (pp)"] > 1                                        # flagged months are several points above the rest
+
+
+@needs_data
+def test_unknown_category_is_left_out_of_charts_even_when_it_ranks_in_the_top(orders):
+    sp = orders[orders["customer_state"] == "SP"]
+    cp = an.category_performance(sp, 100)
+    cp = cp[cp["n_orders"] >= 100]
+    top_late = cp.sort_values("late_rate", ascending=False)["product_category"].head(12).tolist()
+    top_dur = cp.sort_values("mean_duration", ascending=False)["product_category"].head(15).tolist()
+    assert "unknown" in top_late and "unknown" in top_dur                # it WOULD be drawn if it were not excluded
+    at = run_page(states=["SP"])
+    assert not at.exception
+    for key in ("da_cat_late", "da_cat_dur", "da_dur_cat_chart"):
+        labels = [str(y) for y in bar_labels(fig_of(at, key))]
+        assert labels and not any("nknown" in x for x in labels), key
+    # the table keeps it out by default, and shows it when asked
+    assert "Unknown" not in set(frame_with(at, "Category")["Category"])
+    at.toggle(key="da_cat_unknown").set_value(True).run()
+    assert "Unknown" in set(frame_with(at, "Category")["Category"])

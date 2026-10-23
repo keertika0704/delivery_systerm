@@ -104,6 +104,16 @@ def _sticky(key: str, valid=None) -> None:
         st.session_state[keep] = st.session_state[key]
 
 
+def _na_dash(frame: pd.DataFrame, col: str = "mean_late_days"):
+    """(frame, column config) for the average-delay column.  It stays numeric (sortable) unless some state has no
+    late orders; then the missing values are shown as a dash (st.dataframe would print 'None') and the column is text."""
+    help_ = "Average delay beyond the estimated date, among late orders only"
+    if frame[col].isna().any():
+        frame = frame.assign(**{col: frame[col].map(lambda v: ui.DASH if pd.isna(v) else f"{v:.1f}")})
+        return frame, st.column_config.TextColumn("Avg days late", help=help_)
+    return frame, st.column_config.NumberColumn("Avg days late", format="%.1f", help=help_)
+
+
 def _height(n_rows: int, cap: int = 1100) -> int:
     """Pixel height that shows ``n_rows`` rows plus the header without an inner scrollbar (up to ``cap``)."""
     return int(min(36 * (n_rows + 1) + 4, cap))
@@ -259,6 +269,16 @@ def interpret_map(perf: pd.DataFrame, kpi: dict, high: pd.DataFrame, min_orders:
     return out
 
 
+def _lookup_tone(h: pd.Series, overall: float) -> str:
+    """Delta colour of the route look-up: only a route with enough orders whose interval excludes the overall rate
+    is coloured; small or overlapping results stay neutral."""
+    if not h["reliable"]:
+        return "neutral"
+    if h["late_ci_low"] > overall:
+        return "bad"
+    return "good" if h["late_ci_high"] < overall else "neutral"
+
+
 def _interval_text(row: pd.Series) -> str:
     """Wording of one state's interval relative to the overall rate (uses the report's own columns)."""
     return (f"{ui.state_label(row['customer_state'])}'s {CI_LEVEL} Wilson interval is "
@@ -313,8 +333,9 @@ ui.kpi_row([
          sublabel=f"{len(rel)} with at least {min_orders:,} orders ({ui.fmt_n(kpi['n_orders'])} in total)",
          icon="map-pin", accent="blue"),
     dict(label="Overall late rate", value=ui.fmt_pct(kpi["late_rate"]),
-         sublabel=f"{ui.fmt_int(kpi['n_late'])} late of {ui.fmt_int(kpi['n_orders'])} orders", icon="clock",
-         accent="slate"),
+         sublabel=f"{ui.fmt_int(kpi['n_late'])} late of {ui.fmt_int(kpi['n_orders'])} orders"
+         + (f" · small sample (under {min_orders:,})" if kpi["n_orders"] < min_orders else ""),
+         icon="clock", accent="slate"),
     dict(label="Only ranked state" if only_one else "Highest observed late rate",
          value=ui.fmt_pct(top_row["late_rate"]) if top_row is not None else ui.DASH,
          sublabel=(f"{ui.state_label(top_row['customer_state'])} · {ui.fmt_n(top_row['n_orders'])}"
@@ -322,10 +343,12 @@ ui.kpi_row([
                    if top_row is not None else f"no state has {min_orders:,}+ orders"),
          delta=(ui.fmt_pp(top_row["late_rate"] - kpi["late_rate"]) + " vs overall")
          if top_row is not None and not only_one else None,
-         delta_tone="bad", icon="alert", accent="blue" if only_one else "red"),
-    dict(label="High-delay segments", value=ui.fmt_int(len(high)),
-         sublabel=f"of {_plural(reg['n_screened'], 'state')} screened (interval above overall, n at least {min_orders:,})",
-         icon="target", accent="amber" if len(high) else "green"),
+         delta_tone="bad", icon="alert",
+         accent="slate" if top_row is None else "blue" if only_one else "red"),
+    dict(label="High-delay segments", value=ui.fmt_int(len(high)) if reg["n_screened"] else ui.DASH,
+         sublabel=(f"of {_plural(reg['n_screened'], 'state')} screened (interval above overall, n at least "
+                   f"{min_orders:,})" if reg["n_screened"] else f"no state has {min_orders:,}+ orders to screen"),
+         icon="target", accent="slate" if not reg["n_screened"] else "amber" if len(high) else "green"),
 ])
 
 tab_map, tab_cmp, tab_high, tab_routes = st.tabs(
@@ -368,23 +391,23 @@ with tab_map:
         view["flag"] = view["flag"].map(_short_flag)
         view.insert(5, "late_ci", [f"{ui.fmt_pct(a)} to {ui.fmt_pct(b)}" for a, b in
                                    zip(view.pop("late_ci_low"), view.pop("late_ci_high"))])
+        view, late_days_cfg = _na_dash(view)
         st.dataframe(
             view, hide_index=True, width="stretch", key="reg_table", height=_height(len(view)),
             column_config={
                 "customer_state": st.column_config.TextColumn("State", width="small"),
-                "state_name": st.column_config.TextColumn("Name", width="medium"),
+                "state_name": st.column_config.TextColumn("Name", width="small"),
                 "n_orders": st.column_config.NumberColumn("Orders (n)", format="localized"),
                 "on_time_rate": st.column_config.NumberColumn("On-time rate", format="percent"),
                 "late_rate": st.column_config.NumberColumn("Late rate", format="percent"),
                 "late_ci": st.column_config.TextColumn(f"Late rate {CI_LEVEL} CI",
                                                        help=f"{CI_LEVEL} Wilson interval for the late rate"),
-                "mean_duration": st.column_config.NumberColumn("Mean delivery (days)", format="%.1f"),
-                "mean_late_days": st.column_config.NumberColumn(
-                    "Avg days late", format="%.1f",
-                    help="Average delay beyond the estimated date, among late orders only"),
+                "mean_duration": st.column_config.NumberColumn("Mean (days)", format="%.1f", width="small",
+                                                                help="Mean delivery time in days"),
+                "mean_late_days": late_days_cfg,
                 "diff_vs_overall_pp": st.column_config.NumberColumn("vs overall (pp)", format="%+.1f"),
                 "flag": st.column_config.TextColumn(
-                    "Assessment vs overall", width="medium",
+                    "Assessment", width="small",
                     help=f"'Above' / 'Below' = the state's {CI_LEVEL} Wilson interval lies entirely above / below the "
                          "overall late rate; 'Overlaps' = the interval includes it. Unadjusted for the number of "
                          "states compared."),
@@ -436,22 +459,22 @@ with tab_cmp:
             default="Overlaps overall")
         sel.insert(0, "name", sel["customer_state"].map(lambda c: config.STATE_NAMES.get(c, c)))
         cmp_view = sel[["customer_state", "name", "n_orders", "late_rate", "late_ci_low", "late_ci_high",
-                        "on_time_rate", "mean_duration", "median_duration", "mean_late_days", "vs_overall_pp",
+                        "mean_duration", "median_duration", "mean_late_days", "vs_overall_pp",
                         "assessment"]].copy()
         cmp_view.insert(4, "late_ci", [f"{ui.fmt_pct(a)} to {ui.fmt_pct(b)}" for a, b in
                                        zip(cmp_view.pop("late_ci_low"), cmp_view.pop("late_ci_high"))])
+        cmp_view, cmp_late_days_cfg = _na_dash(cmp_view)
         st.dataframe(
             cmp_view, hide_index=True, width="stretch", key="reg_cmp_table", height=_height(len(cmp_view)),
             column_config={
                 "customer_state": st.column_config.TextColumn("State", width="small"),
-                "name": st.column_config.TextColumn("Name", width="medium"),
+                "name": st.column_config.TextColumn("Name", width="small"),
                 "n_orders": st.column_config.NumberColumn("Orders (n)", format="localized"),
                 "late_rate": st.column_config.NumberColumn("Late rate", format="percent"),
-                "late_ci": st.column_config.TextColumn(f"Late rate {CI_LEVEL} CI"),
-                "on_time_rate": st.column_config.NumberColumn("On-time rate", format="percent"),
-                "mean_duration": st.column_config.NumberColumn("Mean delivery (days)", format="%.1f"),
+                "late_ci": st.column_config.TextColumn(f"Late rate {CI_LEVEL} CI", width="medium"),
+                "mean_duration": st.column_config.NumberColumn("Mean (days)", format="%.1f", width="small"),
                 "median_duration": st.column_config.NumberColumn("Median (days)", format="%.1f"),
-                "mean_late_days": st.column_config.NumberColumn("Avg days late", format="%.1f"),
+                "mean_late_days": cmp_late_days_cfg,
                 "vs_overall_pp": st.column_config.NumberColumn("vs overall (pp)", format="%+.1f"),
                 "assessment": st.column_config.TextColumn(
                     "Assessment", width="medium",
@@ -501,17 +524,20 @@ with tab_high:
                    "'high' by chance alone. The Holm column below shows which flags survive a correction for this "
                    "(state vs all other orders in view). A flag is a lead to investigate, not a proven cause.")
     else:
+        only = ("No state meets" if reg["n_screened"] == 0 else "Only 1 state meets")
         ui.callout("watch", "Read with care",
-                   f"Only {_plural(reg['n_screened'], 'state')} meets the minimum sample in this view, so there is "
-                   "little to compare. A flag is a lead to investigate, not a proven cause.")
+                   f"{only} the minimum sample in this view, so there is little to compare. "
+                   "A flag is a lead to investigate, not a proven cause.")
     if reg["n_screened"] == 0:
         ui.empty_state("No state meets the minimum sample", f"Lower the minimum below {min_orders:,} orders or "
                        "widen the filters to screen states.", icon="target")
     else:
         if high.empty:
             ui.callout("success", "No high-delay segments found",
-                       f"None of the {reg['n_screened']} screened states has an interval entirely above the overall "
-                       f"late rate of {ui.fmt_pct(kpi['late_rate'])} (overall {ui.fmt_n(kpi['n_orders'])}).")
+                       (f"None of the {reg['n_screened']} screened states has" if reg["n_screened"] != 1
+                        else "The one screened state does not have")
+                       + f" an interval entirely above the overall late rate of {ui.fmt_pct(kpi['late_rate'])} "
+                       f"(overall {ui.fmt_n(kpi['n_orders'])}).")
         else:
             hv = high.merge(holm, on="customer_state", how="left")
             hv.insert(1, "name", hv["customer_state"].map(lambda c: config.STATE_NAMES.get(c, c)))
@@ -526,7 +552,7 @@ with tab_high:
                 hide_index=True, width="stretch", key="reg_high_table", height=_height(len(hv)),
                 column_config={
                     "customer_state": st.column_config.TextColumn("State", width="small"),
-                    "name": st.column_config.TextColumn("Name", width="medium"),
+                    "name": st.column_config.TextColumn("Name", width="small"),
                     "n_orders": st.column_config.NumberColumn("Orders (n)", format="localized"),
                     "late_rate": st.column_config.NumberColumn("Late rate", format="percent"),
                     "late_ci": st.column_config.TextColumn(f"Late rate {CI_LEVEL} CI"),
@@ -539,17 +565,21 @@ with tab_high:
                 })
             n_hold = int((hv["p_holm"] < ALPHA).sum())
             top = hv.iloc[0]
+            many = len(hv) != 1
             ui.callout("info", "Observed",
-                       f"{_plural(len(hv), 'state')} {'are' if len(hv) != 1 else 'is'} flagged as high-delay segments. The "
+                       f"{_plural(len(hv), 'state')} {'are' if many else 'is'} flagged as "
+                       f"{'high-delay segments' if many else 'a high-delay segment'}. The "
                        f"largest excess is {ui.state_label(top['customer_state'])} at {ui.fmt_pct(top['late_rate'])} "
                        f"({ui.fmt_n(top['n_orders'])}), {top['excess_vs_overall'] * 100:+.1f} pp above overall "
-                       f"({top['rate_ratio']:.1f}x). Flagged {'states' if len(hv) != 1 else 'state'} together account for "
+                       f"({top['rate_ratio']:.1f}x). {'Flagged states together account' if many else 'The flagged state accounts'} for "
                        f"{ui.fmt_int(hv['n_orders'].sum())} orders ({ui.fmt_pct(hv['n_orders'].sum() / kpi['n_orders'])} "
                        f"of the view).")
             ui.callout("watch", "Statistical association",
-                       f"{n_hold} of {len(hv)} flagged states remain significant at the {ALPHA:.2f} level after Holm "
+                       f"{n_hold} of {len(hv)} flagged {'states remain' if many else 'state remains'} significant at the "
+                       f"{ALPHA:.2f} level after Holm "
                        "adjustment. Statistical significance is not the same as practical importance (check the "
-                       "excess and the order count) and none of this shows why these states are slower.")
+                       "excess and the order count) and none of this shows why "
+                       f"{'these states are' if many else 'this state is'} slower.")
             ui.callout("alert", "Suggested action",
                        "Investigate flagged states first on the Seller → customer routes tab: is the excess "
                        "concentrated in a few seller states or routes? Then compare their late orders with the "
@@ -641,7 +671,7 @@ with tab_routes:
     table_pairs = pv[pv["reliable"]] if only_rel else pv
     if table_pairs.empty:
         ui.empty_state("No routes match these filters",
-                       f"Try fewer filters, or untick the minimum-sample box ({n_before} routes have fewer than "
+                       f"Try fewer filters, or untick the minimum-sample box ({_plural(n_before, 'route')} below "
                        f"{min_orders:,} orders)." if n_before else "Try fewer filters.", icon="truck")
     else:
         tp = table_pairs.sort_values(["n_orders", "late_rate"], ascending=[False, False], kind="mergesort")
@@ -663,8 +693,8 @@ with tab_routes:
                 "status": st.column_config.TextColumn("Sample", width="medium"),
             })
         hidden = n_before - len(table_pairs)
-        st.caption(f"{len(table_pairs):,} routes shown"
-                   + (f"; {hidden:,} routes with fewer than {min_orders:,} orders hidden" if hidden else "")
+        st.caption(f"{_plural(len(table_pairs), 'route')} shown"
+                   + (f"; {_plural(hidden, 'route')} with fewer than {min_orders:,} orders hidden" if hidden else "")
                    + f". Late-rate intervals are {CI_LEVEL} Wilson intervals, unadjusted for the number of routes.")
 
     # ---- top routes chart ----
@@ -710,13 +740,17 @@ with tab_routes:
         h = hit.iloc[0]
         ui.kpi_row([
             dict(label=f"Seller {sel_s} → Customer {sel_c}", value=ui.fmt_int(h["n_orders"]),
-                 sublabel=f"delivered orders ({ui.fmt_n(h['n_orders'])})", icon="package", accent="blue"),
+                 sublabel=f"delivered {'order' if int(h['n_orders']) == 1 else 'orders'} ({ui.fmt_n(h['n_orders'])})",
+                 icon="package", accent="blue"),
             dict(label="Mean delivery time", value=ui.fmt_days(h["mean_duration"]),
                  sublabel=f"median {ui.fmt_days(h['median_duration'])}", icon="clock", accent="slate"),
-            dict(label="Late rate", value=ui.fmt_pct(h["late_rate"]),
-                 sublabel=f"{CI_LEVEL} interval {ui.fmt_pct(h['late_ci_low'])} to {ui.fmt_pct(h['late_ci_high'])}",
+            dict(label="Late rate" if h["reliable"] else "Late rate (small sample)", value=ui.fmt_pct(h["late_rate"]),
+                 sublabel=f"{CI_LEVEL} interval {ui.fmt_pct(h['late_ci_low'])} to {ui.fmt_pct(h['late_ci_high'])}"
+                 + ("" if h["reliable"] else f" · under {min_orders:,} orders, indicative only"),
                  delta=ui.fmt_pp(h["late_rate"] - kpi["late_rate"]) + " vs overall",
-                 delta_tone="bad" if h["late_rate"] > kpi["late_rate"] else "good", icon="alert", accent="red"),
+                 delta_tone=_lookup_tone(h, kpi["late_rate"]),
+                 icon="alert",
+                 accent={"bad": "red", "good": "green"}.get(_lookup_tone(h, kpi["late_rate"]), "slate")),
         ])
         if not h["reliable"]:
             ui.callout("watch", "Insufficient data",

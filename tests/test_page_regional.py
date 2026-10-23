@@ -889,3 +889,128 @@ def test_widget_values_survive_a_visit_to_another_page():
     at.slider(key="reg_min_orders").set_value(300).run()
     at.run()
     assert at.session_state["_keep_reg_min_orders"] == 300
+
+
+# --------------------------------------------------------------------------- #
+# Mutation-survivor guards and degenerate-view wording
+# --------------------------------------------------------------------------- #
+def test_high_delay_table_excess_is_in_percentage_points(orders):
+    at = _run()
+    tbl = _table(at, "reg_high_table").set_index("customer_state")
+    perf = _state_perf(orders)
+    overall = orders["is_late"].mean()
+    for c, row in tbl.iterrows():
+        assert row["excess_pp"] == pytest.approx((perf.loc[c, "rate"] - overall) * 100)
+        assert row["rate_ratio"] == pytest.approx(perf.loc[c, "rate"] / overall)
+    assert tbl["excess_pp"].max() > 5            # points, not fractions (0.146)
+
+
+def test_gap_kpi_sublabel_states_the_mean_delivery_difference(orders):
+    at = _run()
+    cross = orders[orders["same_state"] == 0]["delivery_duration_days"].mean()
+    same = orders[orders["same_state"] == 1]["delivery_duration_days"].mean()
+    assert cross > same
+    assert _kpi(at, "Gap (cross minus same)")["sub"] == f"{ui.fmt_days(cross - same)} longer on average"
+
+
+def test_map_greys_exactly_the_states_below_the_minimum(orders):
+    perf = _state_perf(orders)
+    for min_orders in (config.DEFAULT_MIN_ORDERS, 500):
+        at = _run()
+        at.slider(key="reg_min_orders").set_value(min_orders).run()
+        traces = {d.get("name"): d for d in _spec(at, "reg_map_chart")["data"]}
+        small = traces["Small sample"]
+        assert set(small["locations"]) == set(perf.index[perf["n"] < min_orders]), min_orders
+        assert set(traces["States"]["locations"]) == set(perf.index[perf["n"] >= min_orders]), min_orders
+
+
+def test_route_table_is_sorted_by_volume_descending(orders):
+    at = _run()
+    n = _table(at, "reg_route_table")["n_orders"].astype(int).tolist()
+    assert n == sorted(n, reverse=True)
+    top = orders.groupby(["seller_state", "customer_state"], observed=True).size().sort_values(ascending=False)
+    assert _table(at, "reg_route_table")["route"].iloc[0] == f"{top.index[0][0]}→{top.index[0][1]}"
+    assert n[0] == int(top.iloc[0])
+
+
+def test_compare_one_reliable_plus_one_small_state_explains_why_no_test(orders):
+    at = _run()
+    at.multiselect(key="reg_compare_states").set_value(["SP", "AC"]).run()
+    assert not at.exception
+    text = _callout(at, "Sample size", "Select at least two states that meet the minimum")
+    assert f"below {config.DEFAULT_MIN_ORDERS:,} orders" in text
+    assert "ranges from" not in " ".join(t for _, t in _callouts(at))
+
+
+def _accent(at: AppTest, label_start: str) -> str:
+    """Accent colour (hex) of the KPI card whose label starts with ``label_start``."""
+    for h in at.get("html"):
+        for c in str(h.value).split('<div class="diq-kpi" ')[1:]:
+            m = re.search(r'--accent:(#[0-9A-Fa-f]{6})', c)
+            lab = re.search(r'class="diq-kpi-label">(.*?)</span>', c, re.S)
+            if lab and _txt(lab.group(1)).startswith(label_start):
+                return m.group(1)
+    raise AssertionError(label_start)
+
+
+def _tiny_views(orders):
+    hb = orders[(orders["product_category"] == "health_beauty")
+                & (orders["purchase_date"] >= "2018-01-01") & (orders["purchase_date"] <= "2018-06-30")]
+    return hb, (pd.Timestamp("2018-01-01").date(), pd.Timestamp("2018-06-30").date())
+
+
+def test_single_flagged_state_wording_is_grammatical(orders):
+    hb, rng = _tiny_views(orders)
+    at = _run(categories=["health_beauty"], date_range=rng)
+    assert not at.exception, [e.value for e in at.exception]
+    tbl = _table(at, "reg_high_table")
+    assert len(tbl) == 1                                    # exactly one flagged state in this view
+    texts = " ".join(t for _, t in _callouts(at))
+    assert "1 state is flagged as a high-delay segment" in texts
+    assert "The flagged state accounts for" in texts
+    assert "1 of 1 flagged state remains significant" in texts
+    assert "this state is slower" in texts
+    for bad in ("high-delay segments. The", "Flagged state together", "1 of 1 flagged states", "1 states"):
+        assert bad not in texts and bad not in _html(at), bad
+
+
+def test_view_without_a_rankable_state_is_neutral_and_grammatical(orders):
+    at = _run(categories=["arts_and_craftmanship"])
+    assert not at.exception, [e.value for e in at.exception]
+    sub = orders[orders["product_category"] == "arts_and_craftmanship"]
+    assert len(sub) < config.DEFAULT_MIN_ORDERS
+    html = _html(at)
+    texts = " ".join(t for _, t in _callouts(at))
+    assert "Only 0" not in texts and "0 of 0" not in html and "0 states" not in texts
+    seg = _kpi(at, "High-delay segments")
+    assert seg["value"] == ui.DASH and "no state has 100+ orders to screen" in seg["sub"]
+    assert "small sample" in _kpi(at, "Overall late rate")["sub"]
+    # no 'good' (green) or 'alert' (red) accent on the empty findings
+    red, green = config.PALETTE["red"].upper(), config.PALETTE["green"].upper()
+    for label in ("High-delay segments", "Highest observed late rate"):
+        assert _accent(at, label).upper() not in (red, green), label
+
+
+def test_avg_days_late_shows_a_dash_not_none_when_a_state_has_no_late_orders(orders):
+    at = _run(categories=["arts_and_craftmanship"])
+    tbl = _table(at, "reg_table")
+    assert (tbl["mean_late_days"] == ui.DASH).any()
+    assert not tbl["mean_late_days"].astype(str).str.contains("None|nan", case=False).any()
+    # numeric (sortable) in the normal view
+    assert pd.api.types.is_numeric_dtype(_table(_run(), "reg_table")["mean_late_days"])
+
+
+def test_small_route_lookup_is_muted(orders):
+    pairs = _route_table_pairs(orders)
+    s, c = pairs[pairs["n"] < 20].index[0]
+    at = _run()
+    at.selectbox(key="reg_lookup_seller").set_value(s)
+    at.selectbox(key="reg_lookup_customer").set_value(c).run()
+    assert not at.exception
+    k = _kpi(at, "Late rate (small sample)")
+    assert "indicative only" in k["sub"]
+    html = _html(at)
+    i = html.index("Late rate (small sample)")
+    card = html[html.rindex('class="diq-kpi"', 0, i):html.index("</div></div>", html.index("diq-kpi-delta", i))]
+    assert "diq-kpi-delta bad" not in card and "diq-kpi-delta good" not in card
+    assert config.PALETTE["slate"].upper() in card.upper()

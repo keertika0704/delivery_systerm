@@ -102,6 +102,30 @@ def reset_explorer_filters(lo: date, hi: date) -> None:
     st.session_state[KEY + "ex_page"] = 1
 
 
+# Streamlit forgets a widget's value when its page is not shown.  The analysis settings and explorer choices are therefore
+# mirrored into one plain (non-widget) session entry at the end of every run and restored before the widgets are created,
+# so they survive a trip to another page (the sidebar filters persist the same way).
+PERSISTED = tuple(KEY + k for k in (
+    "min_orders", "confidence", "only_flagged", "dl_cols", "dl_chart_choice", "ex_search", "ex_status", "ex_dates", "ex_bounds",
+    "ex_states", "ex_cats", "ex_cols", "ex_sort", "ex_dir", "ex_size", "ex_page", "ex_sig", "m_imp_window"))
+KEPT = KEY + "_kept"
+
+
+def restore_settings() -> None:
+    """Put back the settings remembered from the last visit (only for widgets that currently have no value)."""
+    kept = st.session_state.get(KEPT) or {}
+    for k in PERSISTED:
+        if k not in st.session_state and k in kept:
+            st.session_state[k] = kept[k]
+
+
+def keep_settings() -> None:
+    """Remember the current value of every setting that exists now (earlier values stay for widgets not drawn this run)."""
+    kept = dict(st.session_state.get(KEPT) or {})
+    kept.update({k: st.session_state[k] for k in PERSISTED if k in st.session_state})
+    st.session_state[KEPT] = kept
+
+
 def step_page(delta: int, n_pages: int) -> None:
     """Callback for the previous / next page buttons."""
     cur = int(st.session_state.get(KEY + "ex_page", 1))
@@ -135,19 +159,23 @@ def cached_shipments_csv(_df: pd.DataFrame, fkey: tuple, columns: tuple) -> byte
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def cached_chart(name: str, _df: pd.DataFrame, fkey: tuple, min_orders: int):
+    """The chart builders draw (and label) 95% Wilson intervals, so the data behind them is always computed at 95%,
+    whatever 'Interval confidence' is set to for the findings."""
     k = an.kpi_summary(_df)
+    a = CHART_ALPHA
     if name == "Monthly delivery performance":
-        return charts.monthly_performance_chart(an.monthly_performance(_df, min_orders), min_orders=min_orders)
+        return charts.monthly_performance_chart(an.monthly_performance(_df, min_orders, a), min_orders=min_orders)
     if name == "Late rate by customer state":
-        return charts.state_late_rate_bar(an.state_performance(_df, min_orders), min_orders=min_orders,
+        return charts.state_late_rate_bar(an.state_performance(_df, min_orders, alpha=a), min_orders=min_orders,
                                           overall_rate=k["late_rate"])
     # "unknown" is the bucket of orders with no recorded category (a data gap, not a product category): the findings
     # exclude it, so the chart does too; the overall reference line still covers every order in view
     known = _df[_df["product_category"].astype(str) != ins.UNKNOWN_CATEGORY]
-    return charts.category_late_rate_bar(an.category_performance(known, min_orders), min_orders=min_orders,
+    return charts.category_late_rate_bar(an.category_performance(known, min_orders, a), min_orders=min_orders,
                                          overall_rate=k["late_rate"])
 
 
+CHART_ALPHA = 0.05      # fixed: the chart module's whiskers, legends and subtitles all say "95% Wilson interval"
 CHART_CHOICES = ("Monthly delivery performance", "Late rate by customer state", "Late rate by product category")
 
 
@@ -173,7 +201,7 @@ ui.filter_banner(flt)
 
 ui.section_header("How to read this page", icon="info")
 st.html('<div class="rp-strip">'
-        f'<div class="rp-how">{tag(exports.OBSERVED)}<p>Counted directly from the orders in view, always with n and an interval.</p></div>'
+        f'<div class="rp-how">{tag(exports.OBSERVED)}<p>Counted directly from the orders in view, always with n; rates also carry a confidence interval.</p></div>'
         f'<div class="rp-how">{tag(exports.ASSOCIATION)}<p>A statistical test or correlation: two things move together. It does not show that one causes the other.</p></div>'
         f'<div class="rp-how">{tag("Model prediction")}<p>Output of the trained model, judged on later months it never saw (Model evaluation tab).</p></div>'
         f'<div class="rp-how">{tag("Suggested action")}<p>Where an operations manager could look next: a lead to check, never a verdict.</p></div>'
@@ -186,6 +214,7 @@ for col, (path, label, icon) in zip(cols, [("pages/1_Overview.py", "Overview", "
     with col:
         page_link(path, label, icon, label)
 
+restore_settings()
 tab_find, tab_dl, tab_ex, tab_model = st.tabs(["Key findings", "Downloads", "Data explorer", "Model evaluation"])
 
 # =========================================================================== #
@@ -211,7 +240,8 @@ with tab_find:
                        "There is nothing to analyse. Widen the date range or clear the state / category filters in the sidebar.")
         insights_list = ins.generate_insights(df, min_orders, alpha)
     else:
-        insights_list = cached_insights(df, fkey, int(min_orders), alpha)
+        # a single state in view cannot be compared with itself: that card is replaced by a data-sufficiency note
+        insights_list = exports.comparable_insights(cached_insights(df, fkey, int(min_orders), alpha), int(min_orders))
         k = an.kpi_summary(df)
         lo, hi = an.wilson_ci(k["n_late"], k["n_orders"], alpha)
         flagged = [i for i in insights_list if i.kind not in ("overview",) and i.severity in ("alert", "watch")]
@@ -223,7 +253,9 @@ with tab_find:
                  sublabel=f"{ui.fmt_int(k['n_late'])} late orders · {lvl} interval {ui.fmt_pct(lo)} to {ui.fmt_pct(hi)} · "
                           f"{ui.fmt_n(k['n_orders'])}", icon="alert", accent="red"),
             dict(label="Mean delivery time", value=ui.fmt_days(k["mean_duration"]),
-                 sublabel=f"median {ui.fmt_days(k['median_duration'])} · late orders arrive {ui.fmt_days(k['mean_late_days'])} after the estimate on average",
+                 sublabel=f"median {ui.fmt_days(k['median_duration'])} · "
+                          + (f"late orders arrive {ui.fmt_days(k['mean_late_days'])} after the estimate on average"
+                             if k["n_late"] else "no late orders in view"),
                  icon="truck", accent="slate"),
             dict(label="Findings flagged", value=ui.fmt_int(len(flagged)),
                  sublabel=f"{n_alert} alert · {len(flagged) - n_alert} watch", icon="target", accent="green"),
@@ -319,7 +351,8 @@ with tab_find:
 # =========================================================================== #
 with tab_dl:
     ui.section_header("Downloads", f"Files are built for the current filters ({ui.fmt_int(n)} orders). Minimum orders "
-                      f"{ui.fmt_int(min_orders)} and {lvl} intervals come from the Key findings tab.", icon="database")
+                      f"{ui.fmt_int(min_orders)} and {lvl} intervals come from the Key findings tab (charts always use 95% intervals).",
+                      icon="database")
     empty = n == 0
     if empty:
         ui.empty_state("No orders match the current filters", "The downloads are disabled until at least one order is in view. "
@@ -414,7 +447,11 @@ with tab_dl:
         st.html('<div class="rp-dl-title">Chart export (interactive HTML)</div>'
                 '<div class="rp-dl-desc">Pick a key chart and save it as a standalone, interactive HTML file for slides or e-mail. '
                 'The file loads the Plotly library from the internet when opened.</div>')
-        choice = st.selectbox("Chart", CHART_CHOICES, key=KEY + "dl_chart_choice")
+        choice = st.selectbox("Chart", CHART_CHOICES, key=KEY + "dl_chart_choice",
+                              help="Charts always draw 95% Wilson intervals, whatever 'Interval confidence' is set to in the "
+                                   "Key findings tab. The minimum-orders setting does apply.")
+        st.caption("Charts always use 95% intervals; the interval confidence chosen in Key findings applies to the findings, "
+                   "the regional CSV and the summary report. The minimum-orders setting applies to all of them.")
         if empty:
             ui.empty_state("Nothing to chart", "No orders match the current filters.")
         else:
@@ -675,10 +712,13 @@ with tab_model:
             st.plotly_chart(charts.roc_curve_chart(metrics), width="stretch", config=charts.PLOTLY_CONFIG, key=KEY + "m_roc")
         with r2:
             st.plotly_chart(charts.pr_curve_chart(metrics), width="stretch", config=charts.PLOTLY_CONFIG, key=KEY + "m_pr")
-        st.plotly_chart(charts.calibration_chart(metrics), width="stretch", config=charts.PLOTLY_CONFIG, key=KEY + "m_cal")
+        cal1, cal2 = st.columns(2)       # the calibration plot is square (equal axes): pair it with its explanation
+        with cal1:
+            st.plotly_chart(charts.calibration_chart(metrics), width="stretch", config=charts.PLOTLY_CONFIG, key=KEY + "m_cal")
         cav = exports.dig(metrics, "selected_model", "test_window_caveat") or {}
         pr_ci = head["test_pr_ci"]
-        note("info", "Model prediction", "How to read the curves",
+        with cal2:
+            note("info", "Model prediction", "How to read the curves",
                    f"ROC: test AUC {ui.fmt_num(head['test_roc_auc'], 2)} versus {ui.fmt_num(head['val_roc_auc'], 2)} on validation; the closer "
                    "the curve is to the diagonal, the closer the model is to guessing. "
                    f"Precision-recall: test PR-AUC {ui.fmt_num(head['test_pr_auc'], 3)}"
@@ -765,3 +805,5 @@ with tab_model:
              + ("; its probabilities are no better than quoting the base rate" if worse else "")
              + ". It cannot see events such as strikes, weather or demand peaks and does not explain why orders are late. "
                "Historical 2016-2018 Olist data is not current logistics performance.")
+
+keep_settings()

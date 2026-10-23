@@ -79,12 +79,17 @@ _TAB_WIDGET_KEYS = ("da_trend_gran", "da_trend_window", "da_dur_stat", "da_dur_o
                     "da_wf_scatter", "da_cat_sort", "da_cat_reliable", "da_cat_unknown", "da_cat_topn", "da_cat_fmetric")
 
 
-def empty_tab() -> None:
+def keep_widget_state(keys=_TAB_WIDGET_KEYS) -> None:
     # Streamlit forgets the value of a widget that is not drawn in a run.  The tab controls are only drawn when
-    # there are orders, so re-assign them here and they survive a filter combination that returns nothing.
-    for k in _TAB_WIDGET_KEYS:
+    # there are orders, so re-assign them and they survive a filter combination that returns nothing.  Only keys of
+    # widgets NOT drawn earlier in this run may be passed (assigning an instantiated widget key raises).
+    for k in keys:
         if k in st.session_state:
             st.session_state[k] = st.session_state[k]
+
+
+def empty_tab() -> None:
+    keep_widget_state()
     ui.empty_state("No orders match the current filters",
                    "Widen the date range or clear the state / category filters in the sidebar.")
 
@@ -330,17 +335,19 @@ def tab_categories(df, fkey, min_orders):
             "Reliable": tbl["n_orders"] >= min_orders,
         })
         st.dataframe(show_df, hide_index=True, width="stretch", height=min(560, 76 + 35 * len(show_df)), column_config={
-            "Category": st.column_config.TextColumn(width="medium"),
-            "Orders (n)": st.column_config.NumberColumn(format="%d", width="small"),
-            "Late orders": st.column_config.NumberColumn(format="%d", width="small"),
-            "Late rate (%)": st.column_config.NumberColumn(format="%.1f", help="Observed share of orders delivered after the estimated date"),
-            "CI low (%)": st.column_config.NumberColumn(format="%.1f", help="95% Wilson interval, lower bound"),
-            "CI high (%)": st.column_config.NumberColumn(format="%.1f", help="95% Wilson interval, upper bound"),
-            "vs overall (pp)": st.column_config.NumberColumn(format="%+.1f", help="Late rate minus the overall late rate in this view"),
-            "Mean days": st.column_config.NumberColumn(format="%.1f"), "Median days": st.column_config.NumberColumn(format="%.1f"),
-            "Mean freight (R$)": st.column_config.NumberColumn(format="%.2f"),
-            "Freight / price (%)": st.column_config.NumberColumn(format="%.1f", help="Mean of freight divided by item price"),
-            "Reliable": st.column_config.CheckboxColumn(help=f"True when the category has at least {min_orders:,} orders"),
+            # pixel widths that add up to less than the content width at 1440 px, so the last columns are not cut off
+            "Category": st.column_config.TextColumn(width=140),
+            "Orders (n)": st.column_config.NumberColumn(format="%d", width=76),
+            "Late orders": st.column_config.NumberColumn(format="%d", width=84),
+            "Late rate (%)": st.column_config.NumberColumn(format="%.1f", width=84, help="Observed share of orders delivered after the estimated date"),
+            "CI low (%)": st.column_config.NumberColumn(format="%.1f", width=66, help="95% Wilson interval, lower bound"),
+            "CI high (%)": st.column_config.NumberColumn(format="%.1f", width=68, help="95% Wilson interval, upper bound"),
+            "vs overall (pp)": st.column_config.NumberColumn(format="%+.1f", width=98, help="Late rate minus the overall late rate in this view"),
+            "Mean days": st.column_config.NumberColumn(format="%.1f", width=80),
+            "Median days": st.column_config.NumberColumn(format="%.1f", width=88),
+            "Mean freight (R$)": st.column_config.NumberColumn(format="%.2f", width=108),
+            "Freight / price (%)": st.column_config.NumberColumn(format="%.1f", width=108, help="Mean of freight divided by item price"),
+            "Reliable": st.column_config.CheckboxColumn(width=60, help=f"True when the category has at least {min_orders:,} orders"),
         })
         cap = f"{nar.plural(len(show_df), 'category', 'categories')} shown"
         if only_reliable and n_hidden:
@@ -354,6 +361,11 @@ def tab_categories(df, fkey, min_orders):
     note("assoc", assoc)
 
     named = cat_perf[cat_perf["product_category"] != "unknown"] if not cat_perf.empty else cat_perf
+    n_compared = 0 if named.empty else int((named["n_orders"] >= min_orders).sum())
+    if n_compared == 1:       # one category cannot be ranked or compared: say so instead of drawing one-bar rankings
+        note("action", nar.category_action(hi, ranked=True, n_compared=n_compared))
+        keep_widget_state(("da_cat_fmetric",))       # the only control of this tab that was not drawn in this view
+        return
     ui.section_header("Charts", "Highest values among categories with enough orders; whiskers are 95% Wilson intervals.", icon="bar-chart")
     a, b = st.columns(2)
     with a:
@@ -368,8 +380,7 @@ def tab_categories(df, fkey, min_orders):
          "da_cat_freight")
     note("caveat", "Category is mixed up with seller location, product weight and customer region, so a high late rate for a "
                    "category is not evidence that the category itself causes delays.")
-    ranked = not cat_perf.empty and bool(((cat_perf["product_category"] != "unknown") & (cat_perf["n_orders"] >= min_orders)).any())
-    note("action", nar.category_action(hi, ranked=ranked))
+    note("action", nar.category_action(hi, ranked=n_compared > 0))
 
 
 def tab_processing(df, fkey, min_orders):
@@ -477,9 +488,13 @@ def _grp_card(key, res, few: bool = False, n_view: int | None = None):
           f"{stat} · {_p_line(res)} · {nar.n_(res['n'])}", _chip(res["effect_label"], few))
 
 
-def _reading(res, extra: pd.DataFrame | None = None, extra_title: str = "") -> None:
+def _reading(res, extra: pd.DataFrame | None = None, extra_title: str = "", col: str | None = None) -> None:
     with st.expander("Plain-language reading"):
-        st.write(nar.friendly(sa.plain_language(res)))
+        text = sa.plain_language(res)
+        ls = res.get("level_summary")
+        if col and isinstance(ls, pd.DataFrame) and not ls.empty:      # '0' / '3' -> 'Different states' / 'March'
+            text = nar.relabel_reading(text, col, ls.iloc[0]["level"])
+        st.write(nar.friendly(text))
         if res.get("caveat"):
             st.caption(res["caveat"])
         if extra is not None and not extra.empty:
@@ -508,16 +523,21 @@ def tab_tests(df, fkey, min_orders):
                           icon="percent")
         tab = pd.DataFrame({
             "Test": [nar.TEST_NAMES.get(t, t) for t in summ["test"]], "Variables": [nar.friendly(v) for v in summ["variables"]],
-            "Statistic": summ["statistic"],
+            # text, not a number column: a numeric format clips large statistics (U = 1,709,892,180 must not read 710000000)
+            "Statistic": [nar.stat_text(t, x) for t, x in zip(summ["test"], summ["statistic"])],
             "p-value": [nar.pval(p) for p in summ["p_value"]], "Holm-adjusted p": [nar.pval(p) for p in summ["p_holm"]],
-            "Effect size": summ["effect_size"], "Effect": ["indicative only" if few else e for e in summ["effect_label"].fillna("not run").astype(str)], "n": summ["n"].astype(int),
-            "Significant after Holm": summ["significant_holm"].astype(bool),
+            "Significant after Holm": summ["significant_holm"].astype(bool),      # next to the p-values it is derived from
+            "Effect size": summ["effect_size"], "Effect": ["indicative only" if few else e for e in summ["effect_label"].fillna("not run").astype(str)],
+            "n": summ["n"].astype(int),
         })
         st.dataframe(tab, hide_index=True, width="stretch", height=38 + 35 * len(tab), column_config={
-            "Test": st.column_config.TextColumn(width="medium"), "Variables": st.column_config.TextColumn(width="large"),
-            "Statistic": st.column_config.NumberColumn(format="%.4g"), "Effect size": st.column_config.NumberColumn(format="%.3f"),
-            "n": st.column_config.NumberColumn(format="%d"),
-            "Significant after Holm": st.column_config.CheckboxColumn(help="Holm-adjusted p < 0.05")})
+            # fixed pixel widths that add up to less than the content width at 1440 px, so no column is cut off
+            "Test": st.column_config.TextColumn(width=140), "Variables": st.column_config.TextColumn(width=255),
+            "Statistic": st.column_config.TextColumn(width=100), "p-value": st.column_config.TextColumn(width=75),
+            "Holm-adjusted p": st.column_config.TextColumn(width=95),
+            "Significant after Holm": st.column_config.CheckboxColumn(width=140, help="Holm-adjusted p < 0.05"),
+            "Effect size": st.column_config.NumberColumn(format="%.3f", width=80), "Effect": st.column_config.TextColumn(width=95),
+            "n": st.column_config.NumberColumn(format="%d", width=65)})
 
     ui.section_header("Is delivery status related to a category? Chi-square tests",
                       "Tests whether the late rate differs between the levels of each variable; effect size is Cramér's V "
@@ -531,10 +551,12 @@ def tab_tests(df, fkey, min_orders):
                 ls = r.get("level_summary")
                 extra = None
                 if isinstance(ls, pd.DataFrame) and not ls.empty:
-                    extra = ls.head(6).assign(late_rate=lambda x: (100 * x["late_rate"]).round(1)).rename(columns={
+                    extra = ls.head(6).assign(level=lambda x: [nar.level_label(name, v) for v in x["level"]],
+                                              late_rate=lambda x: (100 * x["late_rate"]).round(1)).rename(columns={
                         "level": "Level", "n": "Orders (n)", "n_late": "Late orders", "late_rate": "Late rate (%)",
                         "adj_residual": "Adjusted residual"})
-                _reading(r, extra, "Levels that depart most from independence (adjusted standardized residual, absolute value > 2 is notable):")
+                _reading(r, extra, "Levels that depart most from independence (adjusted standardized residual, absolute value > 2 is notable):",
+                         col=name)
 
     ui.section_header("Do two measures move together? Spearman correlations",
                       "Rank correlation between pairs of variables; |rho| below 0.1 is negligible, 0.1 to 0.3 weak, 0.3 to 0.5 moderate.",
@@ -556,9 +578,11 @@ def tab_tests(df, fkey, min_orders):
             gs = r.get("group_summary")
             extra = None
             if isinstance(gs, pd.DataFrame) and not gs.empty:
-                extra = gs.sort_values("n", ascending=False).head(8).round(2).rename(columns={
-                    "group": "Group", "n": "Orders (n)", "median": "Median days", "mean": "Mean days"})
-            _reading(r, extra, "Largest groups (for the same-state route, 1 = seller and customer in the same state, 0 = different states):")
+                gcol = "same_state" if name.endswith("same_state") else None       # 1 / 0 -> 'Same state' / 'Different states'
+                extra = gs.sort_values("n", ascending=False).head(8).round(2).assign(
+                    group=lambda x: [nar.level_label(gcol, v) for v in x["group"]]).rename(columns={
+                        "group": "Group", "n": "Orders (n)", "median": "Median days", "mean": "Mean days"})
+            _reading(r, extra, "Largest groups by number of orders:")
 
 
 # --------------------------------------------------------------------------- #
