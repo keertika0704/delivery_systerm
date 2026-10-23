@@ -2,24 +2,37 @@
 
 DeliveryIQ is a local, single-process Streamlit application over a pre-computed analytical
 dataset and a pre-trained scikit-learn model. Nothing is trained or re-read from raw CSV at
-app launch.
+app launch; the app only reads `data/processed/orders_delivered.parquet`, `data/processed/data_quality_report.json`,
+`models/delay_classifier.joblib` and `models/model_metrics.json`.
 
 ```
- data/raw/*.csv ──► src/preprocessing.py ──► data/processed/orders_*.parquet ─┐
-   (Olist, 7 files)   (+ feature_engineering.py)                              │
-                                                                              ▼
- data/processed/orders_delivered.parquet ──► src/train_model.py ──► models/delay_classifier.joblib
-                                                                    models/model_metrics.json
-                                                                              │
- Streamlit (app.py + pages/*.py) ◄── src/ui.py, src/charts.py ◄── src/analytics.py,
-                                     src/statistical_analysis.py, src/insights.py, src/prediction.py
+ data/raw/*.csv ──► src/preprocessing.py ──► data/processed/orders_*.parquet (+ .csv, data_quality_report.json)
+   (Olist, 7 files)   (+ feature_engineering.py)            │
+                                                            ▼
+                      orders_delivered.parquet ──► src/train_model.py ──► models/delay_classifier.joblib
+                                                                          models/model_metrics.json
+                                                                                     │
+ app.py ──► st.navigation ──► views/1..5_*.py ◄── src/ui.py (cached loaders, filters) ◄┘
+              (hidden nav)         │
+                                   └──► src/charts.py, analytics.py, statistical_analysis.py, insights.py,
+                                        delay_narrative.py, overview_text.py, exports.py,
+                                        prediction.py, prediction_helpers.py
+
+ scripts/generate_findings.py ──► docs/FINDINGS.md   (reads processed data, model_metrics.json, src/analytics + insights)
 ```
 
-Dependency rule: `config` ← `feature_engineering` ← `preprocessing`; `config` ← `analytics`,
-`statistical_analysis`, `insights`, `train_model`, `prediction`, `charts`; additionally `train_model` ←
-`prediction` (training reuses `derive_model_features`, `coerce_feature_frame`, `HARD_LIMITS` so inference and training
-cannot drift); only `ui.py`, `app.py` and `pages/*` import `streamlit`. Everything under `src/` except `ui.py` is pure Python/pandas and
-unit-testable without Streamlit.
+Dependency rule (imports inside `src/`):
+
+* `config` is the root and imports nothing from the project.
+* `config` ← `feature_engineering` ← `preprocessing`.
+* `config` ← `analytics` ← `statistical_analysis` (uses `wilson_ci`); `analytics`, `exports`, `statistical_analysis` ← `insights`
+  (`insights` imports `exports` for shared presentation helpers).
+* `analytics` + `insights` ← `delay_narrative`; `analytics` ← `overview_text`, `exports`.
+* `config` ← `prediction`; `prediction` ← `train_model` (training reuses `derive_model_features`, `coerce_feature_frame`,
+  `HARD_LIMITS`, `RAW_NUMERIC`, `STATE_PAIR_SEP` so inference and training cannot drift); `analytics`, `charts`, `prediction` ←
+  `prediction_helpers`.
+* **Only `src/ui.py`, `app.py` and `views/*.py` import `streamlit`.** Everything else under `src/` is pure Python/pandas and
+  unit-testable without Streamlit. `views/*.py` do not import each other.
 
 Always run with the project venv: `.venv/bin/python` (Python 3.12). Shared constants live in
 `src/config.py` — read it first.
@@ -232,33 +245,78 @@ risk_color, thresholds, model_name, features_used`), `predict_batch(df, bundle=N
   test (`test_items`, diagnostic only) rankings. Top-10 % precision / recall use expected values under random tie-breaking
   (a constant-score baseline equals the prevalence).
 
-### `src/charts.py` (Plotly figure builders; each accepts DataFrames from analytics, returns `go.Figure`;
-must render a clean "no data for current filters" figure on empty input)
-Includes: status donut, monthly performance (dual metric), duration histogram (+mean/median lines), state late-rate
-bar, category late-rate / duration bars, weight-vs-duration, freight-vs-duration, processing histogram, seller→customer
-heatmap, confusion matrix, model comparison, feature importance, ROC/PR/calibration, Brazil choropleth (if geojson present).
-Applies one shared Plotly template built from `config.PALETTE`.
+### `src/charts.py` (Plotly figure builders; pure, no Streamlit)
+Each builder takes a DataFrame from `analytics` (or the metrics dict) and returns a `go.Figure` using one shared
+`deliveryiq` template built from `config.PALETTE`; on `None` / empty / all-NaN input it returns `empty_figure()` ("No data for
+the current filters") and never raises. Builders include `status_donut`, `monthly_performance_chart`, `delay_trend_chart`,
+`flagged_months_chart`, `duration_histogram`, `state_late_rate_bar`, `state_duration_bar`, `state_comparison_chart`,
+`category_late_rate_bar` / `category_duration_bar` / `category_freight_bar`, `weight_vs_duration`, `freight_vs_duration`,
+`weight_late_rate_bars`, `freight_late_rate_bars`, `processing_histogram`, `late_rate_by_processing_bucket`,
+`state_pair_heatmap`, `state_pair_bar`, `brazil_choropleth` (reads `data/geo/brazil_states.geojson`; falls back to a bar chart
+if the file is missing), and the model charts `model_comparison_chart`, `confusion_matrix_chart`, `roc_curve_chart`,
+`pr_curve_chart`, `calibration_chart`, `feature_importance_chart`, `risk_band_chart`, `probability_gauge`,
+`scenario_comparison_chart`. `figure_to_html_bytes` serialises a figure for download.
 
-### `src/ui.py` (the only src module importing streamlit)
-CSS injection, `kpi_card`/`kpi_row`, `section_header`, `insight_box`, `empty_state`, sidebar brand + dataset info,
-`@st.cache_data` loaders (`get_orders()`, `get_quality_report()`), `@st.cache_resource` model loader,
-`render_global_filters(df) -> DataFrame` (date range, customer state, product category; stored in `st.session_state`;
-shows n orders remaining), `friendly_error(...)`.
+### Text and export helpers (pure, no Streamlit)
+* `src/delay_narrative.py` (Delay Analysis wording), `src/overview_text.py` (Overview wording and headline findings),
+  `src/prediction_helpers.py` (prediction-page wording, form defaults, batch-CSV template/parsing/scoring, risk-band tables,
+  limitation text): f-strings over computed values, no hard-coded statistics.
+* `src/exports.py`: CSV byte builders with a column whitelist (`order_id` plus analytical columns, never customer or seller
+  identifiers; UTF-8 with BOM), the Markdown/HTML summary report, the data-explorer sort/paginate helper, and the labelled
+  model-metrics tables used by Reports & Insights.
 
-### App entry
-`app.py` builds the shell with `st.set_page_config`, injects CSS, defines `st.navigation([...])` over the five
-`pages/*.py` files with titles/icons (Overview is default), renders sidebar brand, global filters and dataset info,
-then `pg.run()`. Pages: `1_Overview.py`, `2_Delay_Analysis.py`, `3_Regional_Intelligence.py`,
-`4_Delay_Prediction.py`, `5_Reports_Insights.py`. Pages call a shared helper in `ui.py` to obtain the
-filtered frame so filters apply consistently.
+### `src/ui.py` (the only `src` module importing streamlit)
+* Formatters (`fmt_int/num/pct/pp/days/money_brl/n`, `state_label`, `category_label`), CSS injection (`inject_css`) and UI
+  primitives (`page_header`, `section_header`, `kpi_card`/`kpi_row`, `callout`, `insight_box`, `empty_state`, `friendly_error`,
+  `small_sample_note`).
+* **Cached loaders** (cache keys include the file's mtime, so replacing a file invalidates the cache):
+  `get_orders()` -> `_read_orders` (`@st.cache_data`, parquet via `preprocessing.load_processed`), `get_quality_report()` and
+  `get_model_metrics()` -> `_read_json` (`@st.cache_data`), `get_model_bundle()` / `get_model_load_error()` ->
+  `_load_model_cached` (`@st.cache_resource`, returns `(bundle, error_text)` so a missing/corrupt/mismatched model never
+  crashes other pages). `prediction.load_model` additionally has its own `lru_cache`.
+* **Data gate:** `data_available()` (processed parquet exists), `render_setup_page()` ("Set up your data" card with the
+  download/placement steps and the preprocessing command), `get_orders()` stops the page with that card if the file vanished,
+  `require_model()` shows "The prediction model is not available" with the training command and stops the page.
+* **Global filters:** `render_global_filters(df)` renders purchase date range, customer state and product category in the sidebar
+  (session-state keys `flt_date_range`, `flt_states`, `flt_categories`), shows how many orders remain, and returns the filtered
+  frame. Pages obtain data through `get_filtered_orders() -> (df_all, df_filtered, filters)` (works without a sidebar, e.g. in
+  `AppTest`), `stop_if_empty(df)` and `filter_banner(flt)`.
+* **Sidebar:** `render_sidebar(pages, current)` draws brand, a hand-rendered navigation (`st.page_link` per page, the current
+  one highlighted), the filters and a "Dataset & model" info block. **Mobile drawer script:** on screens up to 768 px the sidebar
+  is a drawer that covers the page; `inject_drawer_js()` registers (once per browser page load, via
+  `st.html(..., unsafe_allow_javascript=True)`) a click listener that closes the drawer 250 ms after a navigation link is tapped.
+  Filters inside the drawer are not affected; on desktop it does nothing.
 
-*Known Streamlit 1.66 quirks of deep links (not bugs in the page code).* (1) Because a `pages/` directory exists, Streamlit
-runs the very first session after server start through its legacy multipage path, which registers the pages under their
-file names (`Delay_Analysis`) before `app.py` calls `st.navigation`; a deep link such as `/delay-analysis` as the first
-connection therefore shows a dismissible "Page not found" dialog over the correctly rendered page. Later sessions are
-unaffected (`st.navigation` switches the legacy path off). Avoiding it would need the directory to be renamed. (2) The
-default page is always served at `/`; its `url_path="overview"` is ignored, so `/overview` is "Page not found" by design.
-The 404s for `/<page>/_stcore/health` in the browser console are the frontend probing base paths and are harmless.
+### App entry and pages
+`app.py` (executed top to bottom on every rerun):
+1. puts the repo root on `sys.path`, imports only `src.config`, and calls `st.set_page_config` (wide layout, `:material/local_shipping:` icon);
+2. renders a **loading notice** in an `st.empty()` placeholder ("Loading the analysis tools and the delivered-orders data. The
+   first load after starting the app takes a few seconds.") *before* the heavy imports (`from src import ui` pulls in pandas,
+   scipy, scikit-learn, plotly);
+3. `ui.inject_css()`, then builds `PAGES = [st.Page("views/1_Overview.py", default=True), ...]` and `st.navigation(PAGES, position="hidden")`,
+   and clears the notice;
+4. if `ui.data_available()` is false: renders the brand-only sidebar and `ui.render_setup_page()` and `st.stop()`s (every URL shows the setup page);
+5. otherwise `ui.render_sidebar(PAGES, current=page)` and `page.run()`.
+
+Registered pages and URL paths: `1_Overview.py` at `/` (default; it has no `url_path`, so `/overview` does not exist),
+`2_Delay_Analysis.py` at `/delay-analysis`, `3_Regional_Intelligence.py` at `/regional-intelligence`,
+`4_Delay_Prediction.py` at `/delay-prediction`, `5_Reports_Insights.py` at `/reports-insights`.
+
+**Why `views/`, not `pages/`.** Streamlit auto-discovers a `pages/` directory as a legacy multipage app. Combined with `st.navigation`
+it registered pages under their file names (`Delay_Analysis`) for the first session after a server start, so a direct link such as
+`/delay-analysis` showed a "Page not found" dialog on the first visit. The page files were moved to `views/`, which Streamlit does
+not treat specially; old `pages/` slugs (e.g. `/Delay_Analysis`) therefore no longer resolve. Each view inserts the repo root
+into `sys.path` so it can also be run standalone by `streamlit.testing.v1.AppTest`. The 404s for `/<page>/_stcore/health` in the browser console are
+the frontend probing base paths and are harmless.
+
+Page structure (each view calls `ui.get_filtered_orders()` so the sidebar filters apply consistently, except where noted):
+* **Overview**: KPI cards, headline findings, status donut, duration histogram, monthly chart, regional ranking.
+* **Delay Analysis**: six tabs (trends, duration, weight & freight, categories, processing time, statistical tests).
+* **Regional Intelligence**: four tabs (map + table, compare states, high-delay regions, routes).
+* **Delay Prediction**: three tabs (single order, CSV batch scoring, what-changes-the-risk); uses `ui.require_model()`; its model
+  context is fixed (not filtered).
+* **Reports & Insights**: four tabs (key findings with adjustable min-orders and confidence, downloads, data explorer, model
+  evaluation which is a fixed historical test and ignores the filters).
 
 ## 4. Quality rules (apply to every module)
 
@@ -267,3 +325,26 @@ The 404s for `/<page>/_stcore/health` in the browser console are the frontend pr
 * Never claim causality; label retrospective (non-purchase-time) analyses as such.
 * Type hints, short docstrings, vectorised pandas; comments only where logic is non-obvious.
 * Tests live in `tests/` and run with `.venv/bin/python -m pytest`.
+
+## 5. Tests (`tests/`, run with `.venv/bin/python -m pytest -q`)
+
+| File | Covers |
+|---|---|
+| `test_preprocessing.py` | raw loading, cleaning, label definition, schema/dtype contract, quality report (builds small synthetic raw tables; the real-data checks skip if the processed data is absent) |
+| `test_analytics.py` | filters, KPIs, segment tables, Wilson intervals, insights/statistics, empty-frame behaviour |
+| `test_prediction.py` | model training (quick mode), leakage audit, input validation, single/batch prediction, bundle contract |
+| `test_charts.py`, `test_exports.py` | figure builders (including empty input), CSV/report builders |
+| `test_app_shell.py` | `app.py` + `src/ui.py` through Streamlit `AppTest`: navigation, url paths, setup page, filters, loaders |
+| `test_page_overview.py`, `test_page_delay_analysis.py`, `test_page_regional.py`, `test_page_prediction.py`, `test_page_reports.py` | each view through `AppTest` against the real processed data and model (skipped if missing) |
+| `test_notebook02.py`, `test_notebook_03_text.py` | guards on notebook content and narrative honesty (no notebook execution) |
+| `test_browser_smoke.py` | **real-browser tests** against a freshly started `streamlit run app.py` on a free port: every URL as a first visit (no "Page not found") at desktop and phone size, the phone drawer closing after navigation, the desktop sidebar staying open, the loading notice clearing. Requires `playwright` and a Chromium install (`pip install playwright`, `python -m playwright install chromium`; neither is in `requirements.txt`); the module is **skipped** if playwright is not importable, if Chromium cannot launch, or if the processed data is missing. |
+
+Tests that need `data/processed/orders_delivered.parquet` or the model skip with a message pointing at the command that creates them.
+
+## 6. Documentation and scripts
+
+* `README.md`: setup/run guide, page tour, limitations. `docs/FINDINGS.md`: generated findings summary.
+* `scripts/generate_findings.py` regenerates `docs/FINDINGS.md`; it reuses `src.analytics` / `src.insights` and reads
+  `data/processed/*` and `models/model_metrics.json`, and cross-checks the window sizes and late rates against the quality report
+  and metrics file.
+* `notebooks/_build_nb0{1,2,3}.py` generate and execute the notebooks (`_nb0N_text.py` hold the narrative); notebook 03 does not write the model.
