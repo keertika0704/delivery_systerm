@@ -1,3 +1,11 @@
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# put the Olist CSVs from Kaggle into data/raw/ (the README lists which ones)
+.venv/bin/python -m src.preprocessing
+.venv/bin/python -m streamlit run app.py
+
+
+
+
 # DeliveryIQ
 
 DeliveryIQ is a Streamlit app that analyses **late deliveries in the Olist Brazilian e-commerce dataset** (about 99,000 orders
