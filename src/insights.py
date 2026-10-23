@@ -30,10 +30,11 @@ import numpy as np
 import pandas as pd
 
 from . import analytics as an
+from . import exports
 from . import statistical_analysis as sa
 from .config import DEFAULT_ALPHA, DEFAULT_MIN_ORDERS, STATE_NAMES
 
-__all__ = ["Insight", "generate_insights", "recommendations", "summary_report", "regional_report",
+__all__ = ["Insight", "generate_insights", "month_screen", "recommendations", "summary_report", "regional_report",
            "ALERT_RATIO"]
 
 ALERT_RATIO = 2.0
@@ -71,7 +72,7 @@ def _num(x: float, digits: int = 1) -> str:
 def _p(p: float) -> str:
     if p is None or not np.isfinite(p):
         return "p = n/a"
-    if p == 0:
+    if p <= 1e-300:  # 0, or an underflowed value clipped to P_FLOOR (or a Bonferroni multiple of it)
         return "p < 0.001"
     return f"p = {p:.2g}" if p < 0.001 else f"p = {p:.3f}"
 
@@ -140,6 +141,17 @@ def _month_screen(monthly: pd.DataFrame, alpha: float) -> pd.DataFrame:
                                       "p_value"])
     out["p_bonferroni"] = np.minimum(1.0, out["p_value"] * max(len(out), 1))
     return out
+
+
+def month_screen(monthly: pd.DataFrame, alpha: float = DEFAULT_ALPHA) -> pd.DataFrame:
+    """Public month screen: each reliable month vs all other months (pooled).
+
+    ``monthly`` = ``analytics.monthly_performance(df, min_orders)``.  Columns: ``month, n_orders, n_late,
+    late_rate, rest_n, rest_late_rate, diff, diff_ci_low, diff_ci_high, p_value, p_bonferroni``
+    (Bonferroni over the months tested).  Rows with ``diff > 0`` and ``p_bonferroni < alpha`` are the
+    months :func:`generate_insights` reports as markedly higher.
+    """
+    return _month_screen(monthly, alpha)
 
 
 def generate_insights(df: pd.DataFrame, min_orders: int = DEFAULT_MIN_ORDERS,
@@ -572,10 +584,21 @@ def _model_section(mm: dict | None) -> list[str]:
     if not mm or not isinstance(mm, dict):
         return []
     lines = ["## Prediction model (purchase-time features only)", ""]
+    head = exports.model_headline(mm)
+    if head is not None:  # plain-language verdict first, written from the real test-window numbers
+        noun, cmp_ = exports.signal_phrase(head["test_roc_auc"])
+        lines += [f"**Read this first: {noun}, not an accurate predictor.** On the untouched test window "
+                  f"({_num(head['test_n'], 0)} orders, {_pct(head['test_late_rate'])} late) the {head['label'].lower()} "
+                  f"ranks late orders {cmp_} (ROC-AUC {_num(head['test_roc_auc'], 2)}; PR-AUC "
+                  f"{_num(head['test_pr_auc'], 3)} against a no-skill level of {_num(head['test_late_rate'], 3)}). "
+                  "Use it as a rough screening aid, never as a reliable forecast of an individual order.", ""]
+    lines += ["*This section is a fixed historical evaluation of the trained model. It does not change with the "
+              "filters, minimum orders or confidence level used for the rest of this report.*", ""]
     name = _find(mm, ["selectedmodel", "modelname", "bestmodel", "selected"])
     selected_info = name if isinstance(name, dict) else {}
     if isinstance(name, dict):
         name = _find(name, ["name", "model"])
+    shown_name = exports.model_label(mm, str(name)) if (name and head is not None) else name
     models = _find(mm, ["models", "metrics", "permodel", "modelmetrics"])
     rows, shown = [], False
     if isinstance(models, dict):
@@ -588,25 +611,36 @@ def _model_section(mm: dict | None) -> list[str]:
             if vals:
                 rows.append((str(mname), vals))
     if name:
-        lines.append(f"Selected model: **{name}**.")
+        lines.append(f"Selected model: **{shown_name}**.")
     if rows:
         labels = [lab for lab, _ in METRIC_LABELS if any(lab in v for _, v in rows)]
         lines += ["", "| Model | " + " | ".join(labels) + " |", "|---|" + "---|" * len(labels)]
         for mname, vals in rows:
             star = " (selected)" if name and mname == str(name) else ""
-            lines.append(f"| {mname}{star} | " + " | ".join(
+            mshown = exports.model_label(mm, mname) if head is not None else mname
+            lines.append(f"| {mshown}{star} | " + " | ".join(
                 f"{vals[l]:.3f}" if l in vals else "n/a" for l in labels) + " |")
         lines.append("")
         lines.append("Metrics are reported on the held-out test split when the file provides one.")
         shown = True
+    if head is not None:
+        lines += ["", "**What the model can and cannot do**", ""] + [f"- {pt}" for pt in exports.honest_summary(mm)]
+        shown = True
     split = _find(mm, ["split", "splits"])
     if isinstance(split, dict) and isinstance(_find(split, ["windows"]), dict):
         split = _find(split, ["windows"])
-    sources = (("Selection rationale", _find(mm, ["selectionrationale", "rationale"])
-                or _find(selected_info, ["rationale"])),
-               ("Risk bands", _find(mm, ["riskbands", "riskbanddefinition", "riskthresholds"])),
+    real_split = exports.split_table(mm)
+    if len(real_split):  # real first / last purchase dates and sizes of each window, as on the page
+        split_txt = "; ".join(
+            f"{r['Window'].lower()} {r['From']} to {r['To']} ({_num(r['Orders (n)'], 0)} orders, {_pct(r['Late rate'])} late)"
+            for _, r in real_split.iterrows())
+    else:
+        split_txt = split if split is not None else _find(mm, ["splitwindows", "windows"])
+    sources = (("Risk bands", _find(mm, ["riskbands", "riskbanddefinition", "riskthresholds"])),
                ("Leakage audit", _find(mm, ["leakageaudit", "leakageauditresult"])),
-               ("Split windows", split if split is not None else _find(mm, ["splitwindows", "windows"])))
+               ("Split windows", split_txt),
+               ("Selection rationale", _find(mm, ["selectionrationale", "rationale"])
+                or _find(selected_info, ["rationale"])))
     for label, v in sources:
         if v not in (None, "", {}, []):
             lines += ["", f"- **{label}:** {_fmt_value(v)}"]

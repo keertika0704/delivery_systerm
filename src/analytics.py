@@ -36,7 +36,7 @@ __all__ = [
     "category_performance", "state_pair_performance", "high_delay_segments", "binned_stat",
     "weight_bins", "freight_bins", "processing_summary", "late_by_processing_bucket",
     "scatter_sample", "category_cost_comparison", "state_matrix", "same_state_comparison",
-    "STATE_NAMES", "DEFAULT_MIN_ORDERS",
+    "cramers_v_bootstrap_ci", "STATE_NAMES", "DEFAULT_MIN_ORDERS",
 ]
 
 #: Fixed (domain-chosen, round-number) bin edges used by ``weight_bins`` / ``freight_bins`` /
@@ -673,3 +673,56 @@ def same_state_comparison(df: pd.DataFrame, min_orders: int = 0, alpha: float = 
     out["n_late"] = out["n_late"].astype("int64")
     out = _add_rates(out, min_orders, alpha)
     return out[cols]
+
+
+def _cramers_v_from_counts(table: np.ndarray, corrected: bool = False) -> float:
+    """Cramer's V of a 2-D contingency table of counts (``corrected`` = Bergsma bias correction); NaN if undefined."""
+    t = np.asarray(table, dtype=float)
+    if t.ndim != 2:
+        return float("nan")
+    t = t[t.sum(axis=1) > 0][:, t.sum(axis=0) > 0]
+    n = t.sum()
+    if min(t.shape) < 2 or n <= 0:
+        return float("nan")
+    expected = np.outer(t.sum(axis=1), t.sum(axis=0)) / n
+    phi2 = float(((t - expected) ** 2 / expected).sum() / n)
+    r, k = t.shape
+    if not corrected:
+        return float(np.sqrt(phi2 / (min(r, k) - 1)))
+    if n <= 1:
+        return float("nan")
+    phi2c = max(0.0, phi2 - (r - 1) * (k - 1) / (n - 1))
+    rc, kc = r - (r - 1) ** 2 / (n - 1), k - (k - 1) ** 2 / (n - 1)
+    denom = min(rc, kc) - 1
+    return float(np.sqrt(phi2c / denom)) if denom > 0 else float("nan")
+
+
+def cramers_v_bootstrap_ci(table: "pd.DataFrame | np.ndarray", alpha: float = DEFAULT_ALPHA,
+                           n_boot: int = 1000, seed: int = RANDOM_STATE) -> tuple[float, float, float]:
+    """Bias-corrected Cramer's V of a contingency table with a parametric-bootstrap percentile interval.
+
+    ``table`` holds observed counts (rows = levels, columns = outcome), e.g. the ``table`` of
+    ``statistical_analysis.chi_square_test``.  The point estimate is Bergsma's bias-corrected V (plain
+    V is biased upward in large tables with small effects).  The interval resamples the table from a
+    multinomial with the observed cell proportions (``n_boot`` draws, fixed ``seed``), recomputes the
+    corrected V each time and takes the ``alpha / 2`` and ``1 - alpha / 2`` percentiles, shifted so that the bootstrap median
+    equals the point estimate (resampled V is inflated when the true effect is near zero) and floored at
+    0.  It is descriptive: it ignores uncertainty from the pooling of rare levels.  Returns
+    ``(v_corrected, ci_low, ci_high)``; all NaN when V is undefined (fewer than two non-empty rows or
+    columns, or no observations).
+    """
+    t = np.asarray(table, dtype=float)
+    v = _cramers_v_from_counts(t, corrected=True)
+    if not np.isfinite(v):
+        return float("nan"), float("nan"), float("nan")
+    n = int(round(t.sum()))
+    rng = np.random.default_rng(seed)
+    probs = (t / t.sum()).ravel()
+    draws = rng.multinomial(n, probs, size=max(int(n_boot), 1)).reshape((-1,) + t.shape)
+    vs = np.array([_cramers_v_from_counts(d, corrected=True) for d in draws])
+    vs = vs[np.isfinite(vs)]
+    if vs.size == 0:
+        return v, float("nan"), float("nan")
+    lo, hi = np.percentile(vs, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    shift = v - float(np.median(vs))          # median-bias correction: resampled V is inflated near zero
+    return v, float(max(lo + shift, 0.0)), float(max(hi + shift, 0.0))

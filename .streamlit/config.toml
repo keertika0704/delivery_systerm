@@ -1,0 +1,30 @@
+# DeliveryIQ theme and server defaults (Streamlit 1.66).
+# Colours mirror src/config.py::PALETTE.
+
+[server]
+headless = true
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"      # keeps the main menu, hides the Deploy button
+showErrorDetails = "none"    # no raw tracebacks in front of end users
+
+[theme]
+base = "light"
+primaryColor = "#2563EB"
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#0F172A"
+font = "sans-serif"
+baseRadius = "0.6rem"
+borderColor = "#E2E8F0"
+
+[theme.sidebar]
+backgroundColor = "#0F172A"
+secondaryBackgroundColor = "#1E293B"
+textColor = "#E2E8F0"
+primaryColor = "#60A5FA"
+borderColor = "#334155"

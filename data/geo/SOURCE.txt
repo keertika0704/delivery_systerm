@@ -1,0 +1,5 @@
+brazil_states.geojson: Brazil's 27 federative units (properties: sigla = UF code, name).
+Derived from https://github.com/codeforamerica/click_that_hood (public/data/brazil-states.geojson),
+simplified with a Douglas-Peucker pass (0.02 deg tolerance), coordinates rounded to 3 decimals, and
+reduced to the `sigla`/`name` properties (names taken from src/config.py STATE_NAMES). Used only for the
+choropleth in src/charts.py; if the file is missing the chart falls back to a bar chart.
