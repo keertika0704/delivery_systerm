@@ -58,6 +58,7 @@ BASELINE = "#CBD5E1"
 NEUTRAL = "#94A3B8"                   # inconclusive / "no flag" marks
 NEUTRAL_LIGHT = "#CBD5E1"             # small-sample marks
 MASKED = "#F1F5F9"                    # cells hidden because of small n
+MASKED_CELL = "#E2E8F0"               # masked heat-map cells: visibly grey against the card, not 'missing data' white
 FONT = "Inter, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
 
 # Categorical identity colours (validated apart from semantic green/amber/red; CVD-safe order).
@@ -152,7 +153,7 @@ def _finish(fig: go.Figure, title: str, subtitle: str | None = None, *, height: 
     n_sub = subtitle.count("<br>") + 1 if subtitle else 0
     t = top if top is not None else (64 if not subtitle else 78 + 15 * (n_sub - 1))
     if legend and top is None:
-        t += 30 + 22 * (_legend_rows(fig, legend_px) - 1)
+        t += 34 + 22 * (_legend_rows(fig, legend_px) - 1)
     fig.update_layout(
         template=TEMPLATE, title=_title_dict(title, subtitle), height=height,
         margin=dict(l=left if left is not None else 16, r=right if right is not None else 24,
@@ -160,7 +161,8 @@ def _finish(fig: go.Figure, title: str, subtitle: str | None = None, *, height: 
         showlegend=legend,
     )
     if legend:
-        fig.update_layout(legend=dict(orientation="h", x=0, xanchor="left", y=1.0, yanchor="bottom",
+        # y slightly above 1.0 so the legend never sits on the top y-axis tick label ("100%")
+        fig.update_layout(legend=dict(orientation="h", x=0, xanchor="left", y=1.03, yanchor="bottom",
                                       yref="paper", traceorder="normal"))
     return fig
 
@@ -693,7 +695,7 @@ def _histogram(v: np.ndarray, *, title: str, xtitle: str, cap_quantile: float, b
         _legend_proxy(fig, name, c, dash=dash)
     stats = (f"<b>n = {n:,}</b><br>Mean {mean:.1f} d · Median {median:.1f} d<br>"
              f"90th pct {p90:.1f} d · 95th pct {p95:.1f} d")
-    fig.add_annotation(text=stats, xref="paper", yref="paper", x=0.99, y=0.97, xanchor="right", yanchor="top",
+    fig.add_annotation(text=stats, xref="paper", yref="paper", x=0.99, y=0.62, xanchor="right", yanchor="top",   # the right-skewed tail leaves this area empty
                        showarrow=False, align="left", bgcolor="#FFFFFF", bordercolor=BASELINE, borderwidth=1,
                        borderpad=8, font=dict(size=12, color=INK_2))
     fig.update_xaxes(title=xtitle, range=[0, top])
@@ -703,7 +705,7 @@ def _histogram(v: np.ndarray, *, title: str, xtitle: str, cap_quantile: float, b
     if n_beyond:
         extra = f"{n_beyond:,} orders above {top:g} days not shown (axis capped at the {cap_quantile:.0%} quantile)"
         sub = f"{sub} · {extra}" if sub else extra
-    return _finish(fig, title, sub, height=420, legend=True)
+    return _finish(fig, title, sub, height=420, legend=True, wrap=_NARROW_WRAP, legend_px=_NARROW_LEGEND_PX)
 
 
 # --------------------------------------------------------------------------- #
@@ -1153,6 +1155,8 @@ def state_pair_heatmap(matrices: Mapping[str, pd.DataFrame] | None, *, metric: s
     fig = go.Figure(go.Heatmap(
         z=vals, x=list(z.columns), y=list(z.index), colorscale=scale, zmin=0, zmax=zmax, xgap=2, ygap=2,
         customdata=cd, hoverongaps=False,
+        # value printed in every drawn cell (the grid is small), so the reader does not have to decode the colour scale
+        texttemplate="%{z:" + hf + "}" if vals.size <= 330 else None, textfont=dict(size=10),
         colorbar=dict(title=dict(text=cb + (" (capped)" if capped else ""), side="right"), thickness=12, len=0.8,
                       tickformat=fmt),
         hovertemplate=("Seller state: <b>%{y}</b> → Customer state: <b>%{x}</b><br>"
@@ -1160,7 +1164,7 @@ def state_pair_heatmap(matrices: Mapping[str, pd.DataFrame] | None, *, metric: s
     fig.update_xaxes(title="Customer state (destination)", side="bottom", showgrid=False, type="category",
                      tickangle=0)
     fig.update_yaxes(title="Seller state (origin)", autorange="reversed", showgrid=False, type="category")
-    fig.update_layout(plot_bgcolor=MASKED)
+    fig.update_layout(plot_bgcolor=MASKED_CELL)
     sub = f"Grey cells have fewer than {min_orders:,} orders and are masked" + (
         "; colour scale capped at the 95th percentile so a few extreme cells do not wash out the rest" if capped else "")
     h = max(420, 24 * len(z.index) + 190)

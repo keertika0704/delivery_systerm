@@ -1253,8 +1253,9 @@ def test_category_insights_ordering_unknown_and_flagged_only_recommendation():
     assert 11 / 110 > (overall * len(d) - 150) / (len(d) - 300) and lo < overall
     assert cd.metrics["flagged"] == ["audio"] and cd.metrics["n_reliably_above"] == 1
     assert cd.text.count("[reliably above overall]") == 1
-    assert cd.text.index("audio") < cd.text.index("[reliably above overall]") < cd.text.index("fashion")
-    assert "unknown" not in cd.text and cd.metrics["n_screened"] == 4
+    # display labels are capitalised ("Audio"); metrics keep the raw category value
+    assert cd.text.index("Audio") < cd.text.index("[reliably above overall]") < cd.text.index("Fashion")
+    assert "unknown" not in cd.text.lower() and cd.metrics["n_screened"] == 4
     cdur = _by_kind(out, "category_duration")[0]
     durs = [s["mean_duration"] for s in cdur.metrics["segments"]]
     assert durs == sorted(durs, reverse=True) and "unknown" not in [s["product_category"] for s in cdur.metrics["segments"]]
@@ -1262,7 +1263,7 @@ def test_category_insights_ordering_unknown_and_flagged_only_recommendation():
     cf = _by_kind(out, "category_freight")[0]
     assert "unknown" not in [s["product_category"] for s in cf.metrics["segments"]]
     rec = [r for r in ins.recommendations(out) if "reliably higher late rates" in r]
-    assert len(rec) == 1 and "audio" in rec[0] and "fashion" not in rec[0] and "books" not in rec[0]
+    assert len(rec) == 1 and "Audio" in rec[0] and "Fashion" not in rec[0] and "Books" not in rec[0]
     # only unflagged categories lead the ranking -> no recommendation, severity info
     flat = _blocks([("SP", "SP", "2017-01", "a", 500, 50), ("SP", "SP", "2017-02", "b", 500, 50),
                     ("SP", "SP", "2017-03", "c", 500, 50)])
@@ -1278,8 +1279,8 @@ def test_recommendation_lists_only_flagged_categories_real_style_case():
     for r in ins.recommendations(out):
         if "reliably higher late rates" in r:
             flagged = _by_kind(out, "category_delay")[0].metrics["flagged"]
-            assert flagged and all(c in r for c in flagged)
-            for c in ("fashion", "books", "toys"):
+            assert flagged and all(c.capitalize() in r for c in flagged)
+            for c in ("Fashion", "Books", "Toys"):
                 assert c not in r
 
 
@@ -1541,7 +1542,7 @@ def test_spearman_ci_is_not_reported_for_a_binary_variable(fx):
 def test_fmt_p_small_values_and_plain_language_pooled_and_top_level_sentences():
     assert sa._fmt_p(2.5e-7) == "p < 0.001 (p = 2.5e-07)" and sa._fmt_p(0.0123) == "p = 0.012"
     assert sa._fmt_p(0.0) == "p < 0.001 (below floating-point precision)" and sa._fmt_p(float("nan")) == "p = n/a"
-    assert ins._p(0.0) == "p < 0.001" and ins._p(2.5e-7) == "p = 2.5e-07" and ins._p(0.0123) == "p = 0.012"
+    assert ins._p(0.0) == "p < 0.001" and ins._p(2.5e-7) == "p < 0.001" and ins._p(0.0123) == "p = 0.012"
     res = sa.chi_square_test(_df_from_counts({"A": (800, 200), "B": (900, 100), "C": (24, 6), "D": (17, 3)}), "g")
     txt = sa.plain_language(res)
     assert "p < 0.001 (p = " in txt
@@ -2095,3 +2096,40 @@ def test_real_runtime_budget(real):
         t0 = time.perf_counter()
         fn()
         assert time.perf_counter() - t0 < 3.0, f"{name} is too slow"
+
+
+# --------------------------------------------------------------------------- #
+# Explorer search matches the labels the app displays
+# --------------------------------------------------------------------------- #
+def test_fold_text_ignores_case_accents_underscores_and_extra_spaces():
+    assert an.fold_text("  São   Paulo ") == "sao paulo"
+    assert an.fold_text("Health beauty") == an.fold_text("health_beauty") == "health beauty"
+    assert an.fold_text("Brasília") == "brasilia"
+
+
+def test_search_matches_displayed_labels(fx):
+    # the data holds raw snake_case / unaccented values, the UI shows 'Toys' style labels and accented city names
+    raw = an.apply_filters(fx, search="toys")
+    assert len(raw) == 6 and set(raw["order_id"]) == set(an.apply_filters(fx, search="TOYS")["order_id"])
+    f = fx.copy()
+    f["product_category"] = f["product_category"].astype(str).replace({"toys": "health_beauty"}).astype("category")
+    f["customer_city"] = f["customer_city"].astype(str).replace({"niteroi": "sao paulo"}).astype("category")
+    f["seller_city"] = f["seller_city"].astype(str)          # plain (non-categorical) strings take the other code path
+    assert len(an.apply_filters(f, search="health_beauty")) == len(an.apply_filters(f, search="Health beauty")) == 6
+    assert len(an.apply_filters(f, search="HEALTH   BEAUTY")) == 6
+    sp = an.apply_filters(f, search="São Paulo")
+    assert len(sp) and len(sp) == len(an.apply_filters(f, search="sao paulo"))
+    assert set(sp["order_id"]) >= set(f.loc[f["customer_city"] == "sao paulo", "order_id"])
+    # ids are still matched literally and a regex metacharacter is not a pattern
+    assert set(an.apply_filters(f, search="O_T11")["order_id"]) == {"o_t11"}
+    assert an.apply_filters(f, search="[").empty
+
+
+@needs_data
+def test_search_health_beauty_label_equals_pandas_on_real_data():
+    df = pd.read_parquet(config.ORDERS_DELIVERED_PATH)
+    expected = int(df["product_category"].astype(str).str.contains("health_beauty", regex=False).sum())
+    assert expected > 0
+    assert len(an.apply_filters(df, search="Health beauty")) == expected
+    exp_sp = int(df["customer_city"].astype(str).str.contains("sao paulo", regex=False).sum())
+    assert len(an.apply_filters(df, search="São Paulo")) >= exp_sp > 0

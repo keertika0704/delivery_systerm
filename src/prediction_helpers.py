@@ -595,6 +595,18 @@ def invalid_rows_report(scored: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(recs, columns=cols)
 
 
+def fmt_value(v: Any) -> str:
+    """A model input for display: whole numbers without a decimal (``1`` not ``1.0``, ``800`` not ``800.0``),
+    other numbers with one decimal, thousands separated."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if not math.isfinite(x):
+        return "n/a"
+    return f"{x:,.0f}" if x == round(x) else f"{x:,.1f}"
+
+
 _IDENT_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 
 

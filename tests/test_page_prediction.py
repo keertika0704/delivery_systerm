@@ -1,4 +1,4 @@
-"""Tests for the Delay Prediction page (pages/4_Delay_Prediction.py) and src/prediction_helpers.py."""
+"""Tests for the Delay Prediction page (views/4_Delay_Prediction.py) and src/prediction_helpers.py."""
 from __future__ import annotations
 
 import io
@@ -16,7 +16,7 @@ from src import charts, config, prediction, ui
 from src import prediction_helpers as H
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = str(ROOT / "pages" / "4_Delay_Prediction.py")
+PAGE = str(ROOT / "views" / "4_Delay_Prediction.py")
 TIMEOUT = 120
 
 needs_data = pytest.mark.skipif(not config.ORDERS_DELIVERED_PATH.is_file(), reason="processed data missing")
@@ -1205,3 +1205,43 @@ def test_probability_gauge_bar_colours_and_needle_position():
         assert needle.x0 == needle.x1 == pytest.approx(p)
         marker = next(t for t in fig.data if t.type == "scatter")
         assert marker.x[0] == pytest.approx(p)
+
+
+# --------------------------------------------------------------------------- #
+# Review round: result flow
+# --------------------------------------------------------------------------- #
+def test_fmt_value_shows_whole_numbers_without_decimals():
+    assert H.fmt_value(1.0) == "1" and H.fmt_value(800.0) == "800" and H.fmt_value(1234.0) == "1,234"
+    assert H.fmt_value(3.5) == "3.5" and H.fmt_value(2.04) == "2.0"          # one decimal otherwise
+    assert H.fmt_value(float("nan")) == "n/a" and H.fmt_value("x") == "x"
+
+
+def test_result_flow_scrolls_to_the_result_and_pin_sits_next_to_the_numbers():
+    src = Path(PAGE).read_text(encoding="utf-8")
+    assert 'st.container(key="pred-result")' in src and "scrollIntoView" in src and "unsafe_allow_javascript=True" in src
+    assert 'st.spinner("Scoring this order and preparing the result' in src
+    # the pin button is created right after the headline KPI row, before the gauge, not at the bottom of the result
+    body = src[src.index("def render_result"):src.index("def render_scenarios")]
+    assert body.index("render_pin()") < body.index("probability_gauge")
+    assert body.count('key="pred_pin"') == 0 and src.count('key="pred_pin"') == 1
+
+
+def test_limitations_are_collapsed_in_the_result_but_still_present(bundle):
+    at = _fresh()
+    at = _submit(at)
+    assert not at.exception
+    labels = [e.label for e in at.expander]
+    assert any(l.startswith("Limitations: please read") for l in labels)
+    assert "Limitations: please read" in _html(at)
+    # the page-level notice at the top is the full warning; the result does not repeat it as an open callout
+    assert _html(at).count("Read this first") == 1
+
+
+def test_assumption_values_have_no_spurious_decimals(bundle):
+    at = _fresh()
+    at = _submit(at)
+    assert not at.exception
+    df = [d for d in at.dataframe if getattr(d, "key", None) == "pred_assumptions"]
+    if df:                                     # blank optional inputs were filled with training medians
+        vals = df[0].value["Value used"].tolist()
+        assert all(not v.endswith(".0") for v in vals), vals

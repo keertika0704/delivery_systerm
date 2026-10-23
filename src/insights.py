@@ -72,14 +72,24 @@ def _num(x: float, digits: int = 1) -> str:
 def _p(p: float) -> str:
     if p is None or not np.isfinite(p):
         return "p = n/a"
-    if p <= 1e-300:  # 0, or an underflowed value clipped to P_FLOOR (or a Bonferroni multiple of it)
+    if p < 0.001:  # also 0 / an underflowed value clipped to P_FLOOR: scientific notation is noise for a reader
         return "p < 0.001"
-    return f"p = {p:.2g}" if p < 0.001 else f"p = {p:.3f}"
+    return f"p = {p:.3f}"
+
+
+def _pl(n: int, noun: str) -> str:
+    """'1 region' / '15 regions' (regular plurals only)."""
+    return f"{n:,} {noun}" if n == 1 else f"{n:,} {noun}s"
 
 
 def _state_label(code: str) -> str:
     name = STATE_NAMES.get(str(code))
     return f"{code} ({name})" if name else str(code)
+
+
+def _cat_label(c: object) -> str:
+    """'office_furniture' -> 'Office furniture' (display text only; metrics keep the raw category value)."""
+    return exports._cat(c)
 
 
 def _lvl(alpha: float) -> str:
@@ -89,7 +99,7 @@ def _lvl(alpha: float) -> str:
 
 def _lead_note(alpha: float, n_screened: int) -> str:
     """Multiple-comparison caveat attached to every unadjusted segment screen."""
-    return (f"Unadjusted {_lvl(alpha)} intervals across {n_screened:,} segments screened; treat "
+    return (f"Unadjusted {_lvl(alpha)} intervals across {_pl(n_screened, 'segment')} screened; treat "
             "flagged segments as leads, not confirmed effects.")
 
 
@@ -202,29 +212,29 @@ def generate_insights(df: pd.DataFrame, min_orders: int = DEFAULT_MIN_ORDERS,
             top = high.head(5)
             sev = "alert" if high["rate_ratio"].iloc[0] >= ALERT_RATIO else "watch"
             out.append(Insight(
-                "region_high", f"{len(high)} region(s) with a reliably higher late rate",
+                "region_high", f"{_pl(len(high), 'region')} with a reliably higher late rate",
                 f"Compared with the overall {_pct(overall)}, these customer states have a late rate "
                 f"whose {_lvl(alpha)} interval lies entirely above it: "
                 + "; ".join(_seg_text(r, "customer_state", _state_label, alpha) for _, r in top.iterrows())
-                + f". Screened {n_rel} regions with n >= {min_orders:,}. " + _lead_note(alpha, n_rel),
+                + f". Screened {_pl(n_rel, 'region')} with n >= {min_orders:,}. " + _lead_note(alpha, n_rel),
                 {"segments": _records(top, ["customer_state", *SEG_COLS, "excess_vs_overall", "rate_ratio"]),
                  "n_flagged": int(len(high)), "n_screened": n_rel, "overall_late_rate": overall},
                 int(high["n_orders"].sum()), sev))
         else:
             out.append(Insight(
                 "region_high", "No region reliably above the overall late rate",
-                f"None of the {n_rel} regions with n >= {min_orders:,} has a late-rate interval "
+                f"None of the {_pl(n_rel, 'region')} with n >= {min_orders:,} has a late-rate interval "
                 f"entirely above the overall {_pct(overall)} ({_lvl(alpha)} interval, unadjusted).",
                 {"n_flagged": 0, "n_screened": n_rel, "overall_late_rate": overall},
                 int(states.loc[states["reliable"], "n_orders"].sum())))
         if len(low):
             top = low.head(5)
             out.append(Insight(
-                "region_low", f"{len(low)} region(s) with a reliably lower late rate",
+                "region_low", f"{_pl(len(low), 'region')} with a reliably lower late rate",
                 f"These customer states have a late rate whose {_lvl(alpha)} interval lies entirely below the "
                 f"overall {_pct(overall)}: "
                 + "; ".join(_seg_text(r, "customer_state", _state_label, alpha) for _, r in top.iterrows())
-                + f". Screened {n_rel} regions with n >= {min_orders:,}. " + _lead_note(alpha, n_rel),
+                + f". Screened {_pl(n_rel, 'region')} with n >= {min_orders:,}. " + _lead_note(alpha, n_rel),
                 {"segments": _records(top, ["customer_state", *SEG_COLS, "excess_vs_overall", "rate_ratio"]),
                  "n_flagged": int(len(low)), "n_screened": n_rel, "overall_late_rate": overall},
                 int(low["n_orders"].sum())))
@@ -266,7 +276,7 @@ def generate_insights(df: pd.DataFrame, min_orders: int = DEFAULT_MIN_ORDERS,
                      f"{_pp(r['diff_ci_high'])}, Bonferroni-adjusted {_p(r['p_bonferroni'])}"
                      for _, r in top.iterrows()]
             out.append(Insight(
-                "month_high", f"{len(flagged)} month(s) with a markedly higher late rate",
+                "month_high", f"{_pl(len(flagged), 'month')} with a markedly higher late rate",
                 "Each month was compared with the pooled remaining months (two-proportion test, "
                 f"Bonferroni-adjusted over {len(scr)} months): " + "; ".join(parts) + ".",
                 {"months": top.to_dict("records"), "n_flagged": int(len(flagged)),
@@ -274,7 +284,7 @@ def generate_insights(df: pd.DataFrame, min_orders: int = DEFAULT_MIN_ORDERS,
         else:
             out.append(Insight(
                 "month_high", "No month stands out after multiple-testing adjustment",
-                f"None of the {len(scr)} months with n >= {min_orders:,} has a late rate significantly "
+                f"None of the {_pl(len(scr), 'month')} with n >= {min_orders:,} has a late rate significantly "
                 "above the other months (Bonferroni-adjusted).",
                 {"n_flagged": 0, "n_tested": int(len(scr))},
                 int(monthly.loc[monthly["reliable"], "n_orders"].sum())))
@@ -305,11 +315,12 @@ def generate_insights(df: pd.DataFrame, min_orders: int = DEFAULT_MIN_ORDERS,
             "category_duration", "Categories with the longest delivery times",
             "Longest mean delivery time (categories with n >= "
             f"{min_orders:,}): " + "; ".join(
-                f"{r['product_category']}: {_num(r['mean_duration'])} days (median "
+                f"{_cat_label(r['product_category'])}: {_num(r['mean_duration'])} days (median "
                 f"{_num(r['median_duration'])}, n = {int(r['n_orders']):,})" for _, r in dur.iterrows())
             + f". Overall mean is {_num(k['mean_duration'])} days.",
             {"segments": _records(dur, ["product_category", "n_orders", "mean_duration",
-                                        "median_duration"]), "overall_mean_duration": k["mean_duration"]},
+                                        "median_duration"]), "overall_mean_duration": k["mean_duration"],
+             "n_categories": int(len(cats))},
             int(dur["n_orders"].sum())))
         flag = an.high_delay_segments(cats, min_orders, overall, alpha, "high")
         flagged_set = set(flag["product_category"])
@@ -317,14 +328,14 @@ def generate_insights(df: pd.DataFrame, min_orders: int = DEFAULT_MIN_ORDERS,
         out.append(Insight(
             "category_delay", "Categories with the highest late rates",
             "Highest late rate among categories with n >= " f"{min_orders:,}: " + "; ".join(
-                _seg_text(r, "product_category", alpha=alpha) + (" [reliably above overall]"
+                _seg_text(r, "product_category", _cat_label, alpha) + (" [reliably above overall]"
                                                                  if r["product_category"] in flagged_set else "")
                 for _, r in dly.iterrows()) + f". Overall late rate is {_pct(overall)}. "
             + _lead_note(alpha, len(relc)),
             {"segments": _records(dly, ["product_category", *SEG_COLS]),
              "flagged": [c for c in dly["product_category"] if c in flagged_set],
              "n_reliably_above": len(flagged_set), "n_screened": int(len(relc)),
-             "overall_late_rate": overall},
+             "n_categories": int(len(cats)), "overall_late_rate": overall},
             int(dly["n_orders"].sum()), "watch" if flagged_set & set(dly["product_category"]) else "info"))
         cost = an.category_cost_comparison(df, min_orders)
         cost = cost[cost["reliable"] & (cost["product_category"] != UNKNOWN_CATEGORY)].head(TOP_K)
@@ -332,13 +343,14 @@ def generate_insights(df: pd.DataFrame, min_orders: int = DEFAULT_MIN_ORDERS,
             out.append(Insight(
                 "category_freight", "Categories with the highest freight cost",
                 "Highest mean freight per order: " + "; ".join(
-                    f"{r['product_category']}: {_num(r['mean_freight'], 2)} (freight/price "
+                    f"{_cat_label(r['product_category'])}: R$ {_num(r['mean_freight'], 2)} (freight/price "
                     f"{_num(r['mean_freight_ratio'], 2)}, n = {int(r['n_orders']):,})"
                     for _, r in cost.iterrows())
-                + f". Overall mean freight per order is {_num(k['total_freight'] / n, 2)}.",
+                + f". Overall mean freight per order is R$ {_num(k['total_freight'] / n, 2)}.",
                 {"segments": _records(cost, ["product_category", "n_orders", "mean_freight",
                                              "mean_freight_ratio"]),
-                 "overall_mean_freight": k["total_freight"] / n}, int(cost["n_orders"].sum())))
+                 "overall_mean_freight": k["total_freight"] / n, "n_categories": int(len(cats))},
+                int(cost["n_orders"].sum())))
 
     # ---- seller -> customer routes ---------------------------------------- #
     pairs = an.state_pair_performance(df, min_orders, alpha)
@@ -497,13 +509,13 @@ def recommendations(insights: list[Insight]) -> list[str]:
     ins = kinds.get("category_delay")
     if ins and ins.severity == "watch" and ins.metrics.get("flagged"):
         recs.append("Look into categories with reliably higher late rates "
-                    f"({', '.join(map(str, ins.metrics['flagged'][:TOP_K]))}; unadjusted screen of "
+                    f"({', '.join(_cat_label(c) for c in ins.metrics['flagged'][:TOP_K])}; unadjusted screen of "
                     f"{ins.metrics.get('n_screened', 0):,} categories, so treat these as leads) "
                     "to see whether they share sellers, routes or handling needs.")
     ins = kinds.get("category_duration")
     if ins:
         recs.append(f"Consider checking whether the delivery estimates for slower categories "
-                    f"({_names(ins, 'segments', 'product_category')}) reflect their typical delivery times.")
+                    f"({_names(ins, 'segments', 'product_category', _cat_label)}) reflect their typical delivery times.")
     ins = kinds.get("same_state")
     if ins and ins.severity == "watch":
         recs.append("Review whether cross-state shipments need more conservative delivery estimates: they are late "

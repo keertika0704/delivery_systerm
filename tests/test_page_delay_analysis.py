@@ -1,4 +1,4 @@
-"""Tests for the Delay Analysis page (pages/2_Delay_Analysis.py) and the helpers it added.
+"""Tests for the Delay Analysis page (views/2_Delay_Analysis.py) and the helpers it added.
 
 Page tests drive the page with ``streamlit.testing.AppTest`` (no sidebar is rendered, so filters are set
 through ``st.session_state``) and compare the numbers on screen with an independent pandas / scipy
@@ -24,7 +24,7 @@ from src import delay_narrative as nar
 from src import insights as ins
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = str(ROOT / "pages" / "2_Delay_Analysis.py")
+PAGE = str(ROOT / "views" / "2_Delay_Analysis.py")
 TIMEOUT = 120
 
 needs_data = pytest.mark.skipif(not config.ORDERS_DELIVERED_PATH.is_file(),
@@ -358,8 +358,20 @@ def test_binned_observed_lightest_and_heaviest_are_first_and_last_bins(orders):
     wb = an.weight_bins(orders, min_orders=100)
     txt = nar.binned_observed(wb, "weight", "g", 100, 0.07)
     first, last = wb.iloc[0], wb.iloc[-1]
-    assert f"lightest group ({first['bin']} g, n = {int(first['n_orders']):,}) has a late rate of **{100 * first['late_rate']:.1f}%**" in txt
-    assert f"heaviest group ({last['bin']} g, n = {int(last['n_orders']):,}) has **{100 * last['late_rate']:.1f}%**" in txt
+    assert f"lightest group ({nar.friendly_bin(first['bin'], 'g')}, n = {int(first['n_orders']):,}) has a late rate of **{100 * first['late_rate']:.1f}%**" in txt
+    assert f"heaviest group ({nar.friendly_bin(last['bin'], 'g')}, n = {int(last['n_orders']):,}) has **{100 * last['late_rate']:.1f}%**" in txt
+
+
+def test_friendly_bin_reads_without_interval_notation():
+    f = nar.friendly_bin
+    assert f("[0, 500]", "g") == "0 to 500 g" and f("(500, 1000]", "g") == "over 500 to 1,000 g"
+    assert f("(10000, 30000]", "g") == "over 10,000 to 30,000 g" and f("> 30000", "g") == "over 30,000 g"
+    assert f("[0, 10]", "R$") == "R$ 0 to 10" and f("> 100", "R$") == "over R$ 100"
+    assert f("something else", "g") == "something else"
+    wb = an.weight_bins(pd.read_parquet(config.ORDERS_DELIVERED_PATH), min_orders=100) if config.ORDERS_DELIVERED_PATH.is_file() else None
+    if wb is not None:
+        txt = nar.binned_observed(wb, "weight", "g", 100, 0.07)
+        assert "[" not in txt and "(0," not in txt and "]" not in txt
 
 
 def test_spearman_sentence_with_and_without_ci():
@@ -831,7 +843,7 @@ def test_wide_tables_fit_at_1440px_and_keep_the_key_flags_next_to_their_values()
         assert cols[-1] == last_col
         widths = [cfg[c]["width"] for c in cols]
         assert all(isinstance(w, int) for w in widths), widths          # explicit pixel widths, no "large" columns
-        assert sum(widths) <= 1080, sum(widths)                          # content width of a 1440 px window with the sidebar open
+        assert sum(widths) <= 1060, sum(widths)                          # measured content width of a 1440 px window with the sidebar open
     glance = frame_with(at, "Holm-adjusted p")
     cols = list(glance.columns)
     assert cols.index("Significant after Holm") == cols.index("Holm-adjusted p") + 1      # the flag sits next to its p-value

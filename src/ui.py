@@ -211,6 +211,7 @@ _CSS = """
 :root{
   --navy:__navy__; --slate:__slate__; --slate-light:__slate_light__; --border:__border__;
   --bg:__background__; --card:__card__; --blue:__blue__; --green:__green__; --amber:__amber__; --red:__red__;
+  --slate-text:#526071;
   --shadow:0 1px 2px rgba(15,23,42,.04), 0 4px 14px rgba(15,23,42,.05);
   --radius:14px;
 }
@@ -233,7 +234,7 @@ footer, [data-testid="stFooter"], [data-testid="stDecoration"], [data-testid="st
 .stApp h1{font-weight:800; letter-spacing:-.02em; color:var(--navy);}
 .stApp h2, .stApp h3{font-weight:700; letter-spacing:-.01em; color:var(--navy);}
 [data-testid="stMain"] [data-testid="stMarkdownContainer"] p{color:#1E293B; line-height:1.6;}
-[data-testid="stMain"] [data-testid="stCaptionContainer"]{color:var(--slate-light); opacity:1 !important;}
+[data-testid="stMain"] [data-testid="stCaptionContainer"]{color:var(--slate-text); opacity:1 !important;}
 
 /* ---- page + section headers ---- */
 .diq-page{margin:.2rem 0 1.2rem;}
@@ -242,12 +243,12 @@ footer, [data-testid="stFooter"], [data-testid="stDecoration"], [data-testid="st
   letter-spacing:-.025em; color:var(--navy); margin:.15rem 0 .35rem; padding:0;}
 .diq-title .diq-title-ico{display:inline-flex; width:2.4rem; height:2.4rem; border-radius:12px; align-items:center;
   justify-content:center; background:#DBEAFE; color:var(--blue); flex:0 0 auto;}
-.diq-subtitle{color:var(--slate-light); font-size:1rem; max-width:62rem; margin:0; line-height:1.5;}
+.diq-subtitle{color:var(--slate-text); font-size:1rem; max-width:62rem; margin:0; line-height:1.5;}
 .diq-section{margin:1.8rem 0 .7rem; padding-top:.2rem;}
 .diq-section-title{display:flex; align-items:center; gap:.5rem; font-size:1.22rem; font-weight:700; color:var(--navy);
   margin:0; padding:0; letter-spacing:-.01em;}
 .diq-section-title svg{color:var(--blue);}
-.diq-section-sub{color:var(--slate-light); font-size:.92rem; margin:.2rem 0 0; line-height:1.5;}
+.diq-section-sub{color:var(--slate-text); font-size:.92rem; margin:.2rem 0 0; line-height:1.5;}
 .diq-pillrow{display:flex; flex-wrap:wrap; gap:.4rem; margin:.2rem 0 .4rem;}
 .diq-pill{display:inline-flex; align-items:center; gap:.35rem; font-size:.78rem; font-weight:600; color:var(--slate);
   background:#fff; border:1px solid var(--border); border-radius:999px; padding:.18rem .65rem;}
@@ -260,12 +261,12 @@ footer, [data-testid="stFooter"], [data-testid="stDecoration"], [data-testid="st
   padding:1rem 1.1rem .95rem; box-shadow:var(--shadow); overflow:hidden; min-width:0;}
 .diq-kpi::before{content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--accent);}
 .diq-kpi-top{display:flex; align-items:center; justify-content:space-between; gap:.6rem;}
-.diq-kpi-label{font-size:.78rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--slate-light);}
+.diq-kpi-label{font-size:.78rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--slate-text);}
 .diq-kpi-ico{display:inline-flex; width:2rem; height:2rem; border-radius:10px; align-items:center; justify-content:center;
   background:var(--accent-bg); color:var(--accent); flex:0 0 auto;}
 .diq-kpi-value{font-size:1.85rem; line-height:1.15; font-weight:800; letter-spacing:-.02em; color:var(--navy);
   margin:.45rem 0 .15rem; font-variant-numeric:tabular-nums; overflow-wrap:anywhere;}
-.diq-kpi-sub{font-size:.8rem; color:var(--slate-light); line-height:1.35;}
+.diq-kpi-sub{font-size:.8rem; color:var(--slate-text); line-height:1.35;}
 .diq-kpi-delta{display:inline-block; margin-top:.25rem; font-size:.78rem; font-weight:700; padding:.08rem .45rem;
   border-radius:999px; background:#F1F5F9; color:var(--slate);}
 .diq-kpi-delta.good{background:#DCFCE7; color:#166534;}
@@ -278,20 +279,21 @@ footer, [data-testid="stFooter"], [data-testid="stDecoration"], [data-testid="st
 .diq-callout-body{min-width:0;}
 .diq-callout-title{font-weight:700; color:var(--navy); font-size:.96rem; margin-bottom:.15rem;}
 .diq-callout-text{color:#334155; font-size:.92rem; line-height:1.55;}
-.diq-callout-foot{color:var(--slate-light); font-size:.78rem; margin-top:.3rem;}
+.diq-callout-foot{color:var(--slate-text); font-size:.78rem; margin-top:.3rem;}
 .diq-callout code, .diq-empty code{background:rgba(15,23,42,.06); padding:.05rem .3rem; border-radius:5px; font-size:.85em;}
 .diq-callout.info{--c:#2563EB; --c-bg:#EFF6FF; --c-border:#DBEAFE;}
 .diq-callout.watch{--c:#D97706; --c-bg:#FFFBEB; --c-border:#FDE68A;}
 .diq-callout.alert{--c:#DC2626; --c-bg:#FEF2F2; --c-border:#FECACA;}
 .diq-callout.success{--c:#16A34A; --c-bg:#F0FDF4; --c-border:#BBF7D0;}
+.diq-callout.action{--c:#047857; --c-bg:#ECFDF5; --c-border:#A7F3D0;}
 
 /* ---- empty + error states ---- */
 .diq-empty{text-align:center; background:#fff; border:1px dashed #CBD5E1; border-radius:var(--radius);
   padding:2rem 1.2rem; margin:.6rem 0 1rem; color:var(--slate);}
-.diq-empty .ico{display:inline-flex; width:3rem; height:3rem; border-radius:50%; background:#F1F5F9; color:var(--slate-light);
+.diq-empty .ico{display:inline-flex; width:3rem; height:3rem; border-radius:50%; background:#F1F5F9; color:var(--slate-text);
   align-items:center; justify-content:center; margin-bottom:.6rem;}
 .diq-empty .msg{font-weight:700; color:var(--navy); font-size:1.02rem;}
-.diq-empty .hint{color:var(--slate-light); font-size:.9rem; margin-top:.25rem;}
+.diq-empty .hint{color:var(--slate-text); font-size:.9rem; margin-top:.25rem;}
 .diq-error{background:#fff; border:1px solid #FECACA; border-left:5px solid var(--red); border-radius:var(--radius);
   padding:1.1rem 1.3rem; margin:.8rem 0 .4rem; box-shadow:var(--shadow);}
 .diq-error .t{display:flex; gap:.5rem; align-items:center; font-weight:800; font-size:1.1rem; color:#991B1B;}
@@ -306,7 +308,7 @@ footer, [data-testid="stFooter"], [data-testid="stDecoration"], [data-testid="st
 .diq-brand{display:flex; align-items:center; gap:.7rem; padding:.2rem 0 .8rem; border-bottom:1px solid #1E293B;}
 .diq-brand-name{font-size:1.3rem; font-weight:800; letter-spacing:-.02em; color:#fff; line-height:1.1;}
 .diq-brand-tag{font-size:.7rem; color:#94A3B8; line-height:1.3; margin-top:.15rem;}
-.diq-side-label{font-size:.68rem; font-weight:700; letter-spacing:.11em; text-transform:uppercase; color:#64748B;
+.diq-side-label{font-size:.68rem; font-weight:700; letter-spacing:.11em; text-transform:uppercase; color:#94A3B8;
   margin:.5rem 0 -.2rem;}
 [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"]{border-radius:10px; padding:.5rem .75rem; color:#CBD5E1;
   transition:background .12s;}
@@ -334,9 +336,9 @@ footer, [data-testid="stFooter"], [data-testid="stDecoration"], [data-testid="st
 .diq-counter .warn{color:#FCD34D; font-size:.78rem; margin-top:.4rem; line-height:1.4;}
 .diq-info{background:#111C33; border:1px solid #1E293B; border-radius:12px; padding:.8rem .9rem; font-size:.78rem; color:#94A3B8;}
 .diq-info .row{display:flex; justify-content:space-between; gap:.6rem; padding:.18rem 0;}
-.diq-info .k{color:#64748B; flex:0 0 auto;}
+.diq-info .k{color:#94A3B8; flex:0 0 auto;}
 .diq-info .v{color:#E2E8F0; text-align:right; font-weight:600; min-width:0;}
-.diq-info .hd{font-size:.68rem; font-weight:700; letter-spacing:.11em; text-transform:uppercase; color:#64748B; margin-bottom:.3rem;}
+.diq-info .hd{font-size:.68rem; font-weight:700; letter-spacing:.11em; text-transform:uppercase; color:#94A3B8; margin-bottom:.3rem;}
 .diq-dot{display:inline-block; width:.5rem; height:.5rem; border-radius:50%; margin-right:.35rem; vertical-align:middle;}
 
 /* ---- widgets in the main area ---- */
@@ -358,12 +360,12 @@ footer, [data-testid="stFooter"], [data-testid="stDecoration"], [data-testid="st
   box-shadow:var(--shadow); background:#fff;}
 [data-testid="stMetric"]{background:#fff; border:1px solid var(--border); border-radius:var(--radius); padding:.8rem 1rem;
   box-shadow:var(--shadow);}
-[data-testid="stMetricLabel"] p{font-weight:700; text-transform:uppercase; letter-spacing:.05em; font-size:.74rem; color:var(--slate-light);}
+[data-testid="stMetricLabel"] p{font-weight:700; text-transform:uppercase; letter-spacing:.05em; font-size:.74rem; color:var(--slate-text);}
 [data-testid="stMetricValue"]{font-weight:800; color:var(--navy);}
 [data-testid="stTabs"] [role="tablist"]{gap:.25rem; border-bottom:1px solid var(--border);}
-[data-testid="stTabs"] button[role="tab"]{border-radius:10px 10px 0 0; padding:.55rem 1rem; font-weight:600; color:var(--slate-light);}
+[data-testid="stTabs"] button[role="tab"]{border-radius:10px 10px 0 0; padding:.55rem 1rem; font-weight:600; color:var(--slate-text);}
 [data-testid="stTabs"] button[role="tab"][aria-selected="true"]{color:var(--blue);}
-[data-testid="stTabs"] [data-testid="stTab"]{padding:.55rem 1rem; font-weight:600; color:var(--slate-light);}
+[data-testid="stTabs"] [data-testid="stTab"]{padding:.55rem 1rem; font-weight:600; color:var(--slate-text);}
 [data-testid="stTabs"] [data-testid="stTab"][aria-selected="true"]{color:var(--blue);}
 [data-testid="stExpander"]{background:#fff; border:1px solid var(--border) !important; border-radius:12px; box-shadow:var(--shadow);}
 [data-testid="stExpander"] summary{font-weight:600;}
@@ -373,6 +375,22 @@ footer, [data-testid="stFooter"], [data-testid="stDecoration"], [data-testid="st
 .stApp code{border-radius:6px;}
 :focus-visible{outline:2px solid var(--blue); outline-offset:2px;}
 
+/* ---- tablet / narrow desktop: no orphan cards, no clipped link labels ---- */
+[data-testid="stMain"] [data-testid="stPageLink-NavLink"]{height:auto; min-height:2.4rem;}
+[data-testid="stMain"] [data-testid="stPageLink-NavLink"] p{white-space:normal; overflow:visible; text-overflow:clip;
+  overflow-wrap:anywhere; line-height:1.3;}
+@media (max-width:1280px){
+  .diq-kpi-grid:has(> .diq-kpi:nth-child(4):last-child){grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
+  .diq-kpi-grid:has(> .diq-kpi:nth-child(2):last-child){grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
+}
+@media (max-width:1100px){   /* a container whose key starts with "stack-md" puts its columns under each other */
+  [class*="st-key-stack-md"] [data-testid="stHorizontalBlock"]{flex-direction:column; gap:1rem;}
+  [class*="st-key-stack-md"] [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]{
+    width:100% !important; flex:1 1 100% !important; min-width:0 !important;}
+}
+@media (max-width:1180px){
+  .diq-find-grid > :last-child:nth-child(odd){grid-column:1 / -1;}
+}
 @media (max-width:640px){
   .diq-title{font-size:1.5rem;}
   .diq-kpi-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.7rem;}
@@ -461,11 +479,13 @@ def kpi_row(items: Sequence[dict]) -> None:
     st.html(f'<div class="diq-kpi-grid">{cards}</div>')
 
 
-_CALLOUT_ICON = {"info": "info", "watch": "alert", "alert": "x-circle", "success": "check"}
+_CALLOUT_ICON = {"info": "info", "watch": "alert", "alert": "x-circle", "success": "check", "action": "target"}
 
 
 def callout(kind: str, title: str | None, body: str | None = None, footnote: str | None = None) -> None:
-    """Coloured message box.  ``kind``: info | watch | alert | success (unknown -> info)."""
+    """Coloured message box.  ``kind``: info | watch | alert | success | action (unknown -> info).
+
+    ``action`` is a suggested next step (green, target icon): a lead to investigate, so it must not look like an error."""
     kind = kind if kind in _CALLOUT_ICON else "info"
     t = f'<div class="diq-callout-title">{esc(title)}</div>' if title else ""
     b = f'<div class="diq-callout-text">{_inline_md(body)}</div>' if body else ""
@@ -521,6 +541,8 @@ def small_sample_note(n: Any, min_orders: int = config.DEFAULT_MIN_ORDERS) -> st
 # Cached loaders
 # --------------------------------------------------------------------------- #
 def _mtime(path) -> int:
+    # Passed to the cached loaders below as a *non*-underscore argument on purpose: Streamlit leaves
+    # underscore-prefixed arguments out of the cache key, which would hide a retrained model / rebuilt data.
     try:
         return path.stat().st_mtime_ns
     except OSError:
@@ -528,7 +550,7 @@ def _mtime(path) -> int:
 
 
 @st.cache_data(show_spinner="Loading delivered orders…")
-def _read_orders(path: str, _mtime_ns: int) -> pd.DataFrame:
+def _read_orders(path: str, mtime_ns: int) -> pd.DataFrame:
     from src import preprocessing
     return preprocessing.load_processed(path)
 
@@ -568,7 +590,7 @@ def get_orders() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def _read_json(path: str, _mtime_ns: int) -> dict | None:
+def _read_json(path: str, mtime_ns: int) -> dict | None:
     try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
@@ -589,7 +611,7 @@ def get_model_metrics() -> dict | None:
 
 
 @st.cache_resource(show_spinner="Loading prediction model…")
-def _load_model_cached(path: str, _mtime_ns: int) -> tuple[dict | None, str | None]:
+def _load_model_cached(path: str, mtime_ns: int) -> tuple[dict | None, str | None]:
     from src import prediction
     try:
         return prediction.load_model(path), None
@@ -620,7 +642,7 @@ def require_model() -> dict:
     bundle = get_model_bundle()
     if bundle is None:
         friendly_error("The prediction model is not available",
-                       "Train it once (about a minute) and reload this page. The other pages keep working "
+                       "Train it once (about two minutes) and reload this page. The other pages keep working "
                        "without it.\n" + (get_model_load_error() or ""), TRAIN_COMMAND)
         st.stop()
     return bundle
@@ -837,6 +859,35 @@ def _dataset_info_html(df: pd.DataFrame | None) -> str:
     return f'<div class="diq-info"><div class="hd">Dataset &amp; model</div>{body}</div>'
 
 
+#: On a phone the sidebar is a drawer that covers the page.  Tapping a navigation link used to leave it open over the
+#: page that had just been selected; this closes it again (narrow screens only, navigation links only, so the filters
+#: keep working without the drawer jumping shut).  Registered once per browser page load.
+CLOSE_DRAWER_JS = """
+(function () {
+  if (window.__diqDrawerClose) return;
+  window.__diqDrawerClose = true;
+  document.addEventListener('click', function (ev) {
+    try {
+      var t = ev.target;
+      if (!t || !t.closest || !t.closest('[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"]')) return;
+      if (!window.matchMedia('(max-width: 768px)').matches) return;
+      setTimeout(function () {
+        try {
+          var b = document.querySelector('[data-testid="stSidebarCollapseButton"] button, button[data-testid="stSidebarCollapseButton"]');
+          if (b) b.click();
+        } catch (e) { /* a Streamlit markup change must never break the page */ }
+      }, 250);
+    } catch (e) { /* same */ }
+  }, true);
+})();
+"""
+
+
+def inject_drawer_js() -> None:
+    """Install the close-the-drawer-after-navigation behaviour for narrow screens (see ``CLOSE_DRAWER_JS``)."""
+    st.html(f"<script>{CLOSE_DRAWER_JS}</script>", unsafe_allow_javascript=True)
+
+
 def render_sidebar(pages: Sequence[Any] | None = None, current: Any = None) -> pd.DataFrame | None:
     """Hand-rendered sidebar: brand, navigation, global filters, remaining-orders counter and
     dataset info.  ``current`` is the page returned by ``st.navigation`` (highlighted in the nav).
@@ -844,6 +895,7 @@ def render_sidebar(pages: Sequence[Any] | None = None, current: Any = None) -> p
     with st.sidebar:
         render_brand()
         if pages:
+            inject_drawer_js()
             st.html('<div class="diq-side-label">Navigate</div>')
             with st.container(key="nav-list"):
                 for i, p in enumerate(pages):

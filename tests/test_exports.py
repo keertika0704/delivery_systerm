@@ -283,7 +283,9 @@ def test_underflowed_p_values_are_never_printed_as_numbers():
     from src import statistical_analysis as sa
     for p in (0.0, sa.P_FLOOR, 21 * sa.P_FLOOR, 1e-301):      # 21 x floor = a Bonferroni-adjusted underflow
         assert exports._p(p) == "p < 0.001" and ins._p(p) == "p < 0.001", p
-    assert exports._p(2.5e-7) == "p = 2.5e-07" and ins._p(2.5e-7) == "p = 2.5e-07"      # real small p-values stay exact
+    # any p below 0.001 reads "p < 0.001": scientific notation ("p = 2.5e-07") is jargon for a non-programmer
+    assert exports._p(2.5e-7) == "p < 0.001" and ins._p(2.5e-7) == "p < 0.001"
+    assert "e-" not in exports._p(5.1e-98) and "e-" not in ins._p(5.1e-98)
     assert exports._p(0.0123) == "p = 0.012" and exports._p(float("nan")) == "p = n/a" and ins._p(None) == "p = n/a"
 
 
@@ -361,12 +363,12 @@ def test_comparable_insights_replaces_the_one_region_card_with_a_data_note(order
     sub = orders[orders.customer_state == "SE"]
     raw = ins.generate_insights(sub, 100, 0.05)
     vac = [i for i in raw if i.kind == "region_high"]
-    assert vac and "1 regions" in vac[0].text                      # the raw finding is the vacuous one
+    assert vac and "None of the 1 region " in vac[0].text          # the raw finding is the vacuous one
     out = exports.comparable_insights(raw, 100)
     assert not [i for i in out if i.kind == "region_high"]
     notes = [i for i in out if i.kind == "insufficient_data"]
     assert len(notes) == 1 and exports.SINGLE_REGION_SECTION in notes[0].metrics["sections"]
-    assert exports.SINGLE_REGION_SECTION in notes[0].text and "1 regions" not in " ".join(i.text for i in out)
+    assert exports.SINGLE_REGION_SECTION in notes[0].text and "None of the 1 region " not in " ".join(i.text for i in out)
     # the region card is merged into the (already present) data note; every other finding is untouched
     assert len(out) == len(raw) - 1
     assert [i for i in raw if i.kind not in ("region_high", "insufficient_data")] == \
@@ -394,3 +396,77 @@ def test_comparable_insights_adds_the_note_when_none_exists_and_is_idempotent():
     # a flagged region is never hidden
     flagged = ins.Insight("region_high", "Region above", "AL is higher", {"n_screened": 1, "n_flagged": 1}, 500)
     assert exports.comparable_insights([over, flagged], 100) == [over, flagged]
+
+
+@needs_data
+def test_comparable_insights_drops_the_category_cards_for_a_single_category(orders):
+    """One product category in view: 'longest delivery' / 'highest late rate' / 'highest freight' would rank the category
+    against itself, and a recommendation would call the only category 'slower'."""
+    sub = orders[(orders.customer_state == "RJ") & (orders.product_category == "health_beauty")]
+    assert len(sub) >= 100
+    raw = ins.generate_insights(sub, 100, 0.05)
+    assert {"category_duration", "category_delay", "category_freight"} <= {i.kind for i in raw}   # the raw cards exist
+    out = exports.comparable_insights(raw, 100)
+    assert not [i for i in out if i.kind.startswith("category_")]
+    note = [i for i in out if i.kind == "insufficient_data"]
+    assert len(note) == 1
+    assert exports.SINGLE_CATEGORY_SECTION in note[0].metrics["sections"] and exports.SINGLE_REGION_SECTION in note[0].metrics["sections"]
+    recs = " ".join(ins.recommendations(out))
+    assert "slower categories" not in recs and "only one category in view" in recs
+    assert "1 segments" not in " ".join(i.text for i in raw)           # singular: '1 segment'
+
+
+@needs_data
+def test_a_view_with_several_categories_keeps_its_category_cards(orders):
+    sub = orders[orders.product_category.isin(["health_beauty", "bed_bath_table", "sports_leisure"])]
+    out = exports.comparable_insights(ins.generate_insights(sub, 100, 0.05), 100)
+    assert {"category_duration", "category_delay"} <= {i.kind for i in out}
+
+
+@needs_data
+@pytest.mark.parametrize("states,cats", [(["SP"], []), (["RJ"], ["health_beauty"]), ([], ["health_beauty"])])
+def test_downloaded_report_and_page_cards_are_built_from_the_same_findings(orders, states, cats):
+    """The report file must say what the page says: both go through comparable_insights, so a one-state or one-category
+    view never prints a vacuous 'region vs overall' / 'category vs overall' finding in either place."""
+    sub = orders
+    if states:
+        sub = sub[sub.customer_state.isin(states)]
+    if cats:
+        sub = sub[sub.product_category.isin(cats)]
+    items = exports.comparable_insights(ins.generate_insights(sub, 100, 0.05), 100)
+    md = ins.summary_report(sub, "test view", items, None, alpha=0.05)
+    if states and len(states) == 1:
+        assert "No region reliably above the overall late rate" not in md
+        assert exports.SINGLE_REGION_SECTION in md
+    if cats and len(cats) == 1:
+        assert "Categories with the longest delivery times" not in md
+        assert exports.SINGLE_CATEGORY_SECTION in md
+
+
+def test_every_findings_consumer_goes_through_comparable_insights():
+    """Regression guard: the Reports page cards, the downloadable report and the Overview headline cards must all use
+    comparable_insights (the report once printed the vacuous one-region card that the page hid)."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "views"
+    for fn in ("1_Overview.py", "5_Reports_Insights.py"):
+        src = (root / fn).read_text(encoding="utf-8")
+        assert src.count("comparable_insights(") >= 1, fn
+    rep = (root / "5_Reports_Insights.py").read_text(encoding="utf-8")
+    body = rep[rep.index("def cached_summary"):rep.index("def cached_shipments_csv")]
+    assert "comparable_insights(" in body
+
+
+def test_display_frame_uses_readable_labels_but_leaves_the_export_untouched():
+    raw = pd.DataFrame({"order_id": ["a", "b"], "product_category": ["health_beauty", "bed_bath_table"],
+                        "delivery_status": ["on_time", "late"], "customer_city": ["sao paulo", "rio de janeiro"],
+                        "is_late": [0, 1], "total_price": [10.0, 20.0]})
+    shown = exports.display_frame(raw)
+    assert shown["product_category"].tolist() == ["Health beauty", "Bed bath table"]
+    assert shown["delivery_status"].tolist() == ["On time", "Late"]
+    assert shown["customer_city"].tolist() == ["Sao Paulo", "Rio De Janeiro"]
+    assert raw["delivery_status"].tolist() == ["on_time", "late"] and raw["product_category"].iloc[0] == "health_beauty"
+    # the CSV a user downloads keeps the raw machine-friendly values
+    csv = exports.read_csv_bytes(exports.shipments_csv_bytes(raw.assign(is_late=raw["is_late"]), ["order_id", "product_category"]))
+    assert csv["product_category"].tolist() == ["health_beauty", "bed_bath_table"]
+    assert exports.column_label("delivery_delay_days") == "Days vs promised date"
+    assert "negative" in exports.COLUMN_INFO["delivery_delay_days"][1] or "below 0 = arrived early" in exports.COLUMN_INFO["delivery_delay_days"][1]

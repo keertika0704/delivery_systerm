@@ -21,6 +21,7 @@ Conventions
 """
 from __future__ import annotations
 
+import unicodedata
 import warnings
 from typing import Iterable, Sequence
 
@@ -144,14 +145,37 @@ def delivery_status_label(df: pd.DataFrame) -> pd.Series:
     return label
 
 
-def _contains(series: pd.Series, needle: str) -> np.ndarray:
-    """Case-insensitive literal substring match; evaluated on the categories for category dtype."""
+def fold_text(text: str) -> str:
+    """Search-friendly form of a label: lower case, accents removed, underscores read as spaces, one space between words.
+
+    The app shows 'Health beauty' / 'São Paulo' while the data holds ``health_beauty`` / ``sao paulo``; folding both
+    sides the same way lets a user type what they see.
+    """
+    t = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode("ascii")
+    return " ".join(t.lower().replace("_", " ").split())
+
+
+def _fold_series(s: pd.Series) -> pd.Series:
+    return (s.astype("string").str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("ascii")
+            .str.lower().str.replace("_", " ", regex=False).str.split().str.join(" "))
+
+
+def _contains(series: pd.Series, needle: str, fold: bool = False) -> np.ndarray:
+    """Case-insensitive literal substring match; evaluated on the categories for category dtype.
+
+    ``fold=True`` also ignores accents and treats ``_`` as a space (see :func:`fold_text`); ``needle`` must then
+    already be folded by the caller.
+    """
+    def _hit(s: pd.Series) -> np.ndarray:
+        if fold:
+            s = _fold_series(s)
+        return s.astype("string").str.contains(needle, case=False, regex=False, na=False).to_numpy(dtype=bool)
+
     if isinstance(series.dtype, pd.CategoricalDtype):
-        cats = pd.Series(series.cat.categories.astype(str)).str.contains(
-            needle, case=False, regex=False).to_numpy(dtype=bool)
+        cats = _hit(pd.Series(series.cat.categories.astype(str)))
         codes = series.cat.codes.to_numpy()
         return np.where(codes >= 0, cats[np.clip(codes, 0, None)] if len(cats) else False, False)
-    return series.astype("string").str.contains(needle, case=False, regex=False, na=False).to_numpy(dtype=bool)
+    return _hit(series)
 
 
 STATUS_LABELS = ("late", "on_time")
@@ -184,7 +208,8 @@ def apply_filters(
       label raises a ``UserWarning`` and matches no rows.
     * ``search`` -- case-insensitive literal substring matched against ``order_id``,
       ``customer_city``, ``seller_city`` and ``product_category`` (any column may match);
-      ``None`` / blank = no filter.
+      ``None`` / blank = no filter.  City and category matching ignores accents and reads ``_`` as a space, so the
+      labels shown in the app ('Health beauty', 'São Paulo') find ``health_beauty`` / ``sao paulo``.
     """
     mask = np.ones(len(df), dtype=bool)
 
@@ -214,10 +239,14 @@ def apply_filters(
 
     if search is not None and str(search).strip():
         needle = str(search).strip()
+        folded = fold_text(needle)
         hit = np.zeros(len(df), dtype=bool)
-        for col in ("order_id", "customer_city", "seller_city", "product_category"):
-            if col in df.columns:
-                hit |= _contains(df[col], needle)
+        if "order_id" in df.columns:   # identifiers match literally (case-insensitive)
+            hit |= _contains(df["order_id"], needle)
+        if folded:   # labels match the way they are displayed: 'Health beauty', 'São Paulo'
+            for col in ("customer_city", "seller_city", "product_category"):
+                if col in df.columns:
+                    hit |= _contains(df[col], folded, fold=True)
         mask &= hit
 
     return df.loc[mask].copy()

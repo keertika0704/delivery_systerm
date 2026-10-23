@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:      # lets the page run standalone (e.g. streamli
 
 import streamlit as st  # noqa: E402
 
-from src import analytics, charts, config, insights as insights_mod, overview_text as ot, ui  # noqa: E402
+from src import analytics, charts, config, exports, insights as insights_mod, overview_text as ot, ui  # noqa: E402
 
 MIN_ORDERS = config.DEFAULT_MIN_ORDERS
 MIN_ORDER_CHOICES = [25, 50, 100, 250, 500, 1000]
@@ -40,13 +40,12 @@ _PAGE_CSS = """
 .diq-find.alert .diq-sev{background:#FEE2E2; color:#991B1B;}
 .diq-find.watch .diq-sev{background:#FEF3C7; color:#92400E;}
 .diq-find.info .diq-sev{background:#DBEAFE; color:#1E40AF;}
-.diq-find-kind{font-size:.72rem; color:var(--slate-light); font-weight:600;}
+.diq-find-kind{font-size:.72rem; color:var(--slate-text); font-weight:600;}
 .diq-find-title{font-weight:700; color:var(--navy); font-size:1rem; line-height:1.3;}
-.diq-find-text{color:#334155; font-size:.86rem; line-height:1.5; display:-webkit-box; -webkit-line-clamp:6;
-  -webkit-box-orient:vertical; overflow:hidden;}
+.diq-find-text{color:#334155; font-size:.86rem; line-height:1.5; overflow-wrap:anywhere;}
 .diq-find-caveat{color:#92400E; background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; font-size:.76rem; font-weight:600;
   line-height:1.4; padding:.3rem .5rem; margin-top:auto;}
-.diq-find-foot{color:var(--slate-light); font-size:.76rem;}
+.diq-find-foot{color:var(--slate-text); font-size:.76rem;}
 .diq-note.compact .diq-note-row{flex-direction:column; gap:.3rem;} .diq-note.compact .diq-chip{min-width:0; align-self:flex-start;}
 @media (max-width:640px){ .diq-note-row{flex-direction:column; gap:.3rem;} .diq-chip{min-width:0; align-self:flex-start;} }
 """
@@ -100,7 +99,8 @@ def _state_table(_df, key: tuple, min_orders: int):
 
 @st.cache_data(show_spinner="Computing headline findings…")
 def _insights(_df, key: tuple, min_orders: int):
-    return insights_mod.generate_insights(_df, min_orders=min_orders)
+    # same filter as the Reports page: a single state / category in view is not compared with itself
+    return exports.comparable_insights(insights_mod.generate_insights(_df, min_orders=min_orders), min_orders)
 
 
 # --------------------------------------------------------------------------- #
@@ -182,7 +182,7 @@ def _headline_strip(items: list, flt: dict) -> None:
         cards.append(f'<div class="diq-find {sev}"><div class="diq-find-top"><span class="diq-sev">{_SEV_LABEL[sev]}</span>'
                      f'<span class="diq-find-kind">{ui.esc(label)}</span></div>'
                      f'<div class="diq-find-title">{ui.esc(ins.title)}</div>'
-                     f'<div class="diq-find-text">{ui.esc(ins.text)}</div>'
+                     f'<div class="diq-find-text">{ui.esc(ot.teaser(ins.text))}</div>'
                      f'{caveat}'
                      f'<div class="diq-find-foot">{ui.esc(foot)}</div></div>')
     st.html(f'<div class="diq-find-grid">{"".join(cards)}</div>')
@@ -202,11 +202,11 @@ def _page_link(path: str, label: str, icon: str, key: str) -> None:
 def _page_links() -> None:
     c1, c2, c3 = st.columns(3)
     with c1:
-        _page_link("pages/2_Delay_Analysis.py", "Delay Analysis: what drives delays", ":material/query_stats:", "a")
+        _page_link("views/2_Delay_Analysis.py", "Delay Analysis: what drives delays", ":material/query_stats:", "a")
     with c2:
-        _page_link("pages/3_Regional_Intelligence.py", "Regional Intelligence: states & routes", ":material/map:", "b")
+        _page_link("views/3_Regional_Intelligence.py", "Regional Intelligence: states & routes", ":material/map:", "b")
     with c3:
-        _page_link("pages/5_Reports_Insights.py", "Reports & Insights: all findings", ":material/description:", "c")
+        _page_link("views/5_Reports_Insights.py", "Reports & Insights: all findings", ":material/description:", "c")
 
 
 def _model_pointer() -> None:

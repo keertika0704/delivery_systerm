@@ -27,7 +27,7 @@ ui.inject_css()
 st.html("""<style>
 .pred-field-err{color:#B91C1C; font-size:.82rem; font-weight:600; margin:-.55rem 0 .6rem; line-height:1.35;}
 [data-testid="stMain"] [data-testid="stFormSubmitButton"] button p, [data-testid="stMain"] button[kind="primary"] p{color:#fff !important;}
-.pred-note{color:#64748B; font-size:.82rem; line-height:1.45; margin:-.35rem 0 .6rem;}
+.pred-note{color:#526071; font-size:.82rem; line-height:1.45; margin:-.35rem 0 .6rem;}
 .diq-kpi-top{min-height:2.45rem; align-items:flex-start;}
 </style>""")
 
@@ -104,6 +104,14 @@ tab_one, tab_batch, tab_model = st.tabs(["Predict an order", "Score a CSV file",
 # --------------------------------------------------------------------------- #
 # TAB 1: single order
 # --------------------------------------------------------------------------- #
+SCROLL_JS = """
+(function () {
+  var el = document.querySelector('.st-key-pred-result');
+  if (el && el.scrollIntoView) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+})();
+"""
+
+
 def pin_scenario() -> None:
     last = st.session_state.get(K_LAST)
     scen = st.session_state.setdefault(K_SCEN, [])
@@ -158,6 +166,20 @@ def seed_form(last: dict | None, form_defaults: dict) -> None:
         seed_state(f"pred_promise_{inp['seller_state']}_{inp['customer_state']}", inp["estimated_delivery_days"])
 
 
+def render_pin() -> None:
+    """Pin-to-compare button, shown right under the headline numbers (not at the bottom of a 4,000 px result)."""
+    scen = st.session_state.get(K_SCEN, [])
+    pc1, pc2 = st.columns([1, 3], vertical_alignment="center")
+    with pc1:
+        st.button("Pin to compare", key="pred_pin", on_click=pin_scenario, icon=":material/push_pin:",
+                  disabled=len(scen) >= MAX_SCENARIOS, width="stretch",
+                  help=f"Keep up to {MAX_SCENARIOS} results side by side.")
+    with pc2:
+        msg = st.session_state.get("pred_pin_msg")
+        st.caption(msg if msg else (f"{len(scen)} of {MAX_SCENARIOS} scenarios pinned." if scen else
+                                    "Change an input, predict again and pin each result to compare them."))
+
+
 def render_result(last: dict, current_inputs: dict) -> None:
     res, inputs = last["result"], last["inputs"]
     p, label = res["probability"], res["risk_label"]
@@ -194,6 +216,7 @@ def render_result(last: dict, current_inputs: dict) -> None:
              sublabel=(f"{seller} to {customer}, {ui.fmt_n(route_h['n'])}" if route_h["n"] else f"no orders on {seller} to {customer}"),
              icon="map-pin", accent="slate", help="Historical late rate of delivered orders on this seller-to-customer state route (all years)."),
     ])
+    render_pin()
     st.plotly_chart(charts.probability_gauge(p, res["thresholds"]), width="stretch", key="pred_gauge", config=charts.PLOTLY_CONFIG)
 
     for w in res["warnings"]:
@@ -205,8 +228,10 @@ def render_result(last: dict, current_inputs: dict) -> None:
     if res.get("probability_note"):
         ui.callout("watch", "How much to trust this number", res["probability_note"])
 
-    ui.callout("watch", "Limitations: please read", bullets(H.limitations(bundle, metrics, include_calibration=False, include_bands=False)),
-               footnote="These figures come from the model's stored evaluation (models/model_metrics.json).")
+    # the same warning is the notice at the top of the page: here only the evaluation figures, collapsed
+    with st.expander("Limitations: please read (model evaluation figures)", expanded=False):
+        ui.callout("watch", "Limitations: please read", bullets(H.limitations(bundle, metrics, include_calibration=False, include_bands=False)),
+                   footnote="These figures come from the model's stored evaluation (models/model_metrics.json).")
 
     if len(what_if) > 1:
         ui.section_header("How the estimate responds to the delivery promise",
@@ -235,7 +260,7 @@ def render_result(last: dict, current_inputs: dict) -> None:
         ui.section_header("Assumptions used", "Optional inputs left blank are filled with training-window medians.", icon="settings")
         ass = res["assumptions_used"]
         if ass:
-            rows = [{"Input": H.FIELD_LABELS.get(k, k), "Value used": ui.fmt_num(v["value"], 1) if v["value"] is not None else ui.DASH,
+            rows = [{"Input": H.FIELD_LABELS.get(k, k), "Value used": H.fmt_value(v["value"]) if v["value"] is not None else ui.DASH,
                      "Source": v["source"]} for k, v in ass.items()]
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", key="pred_assumptions")
         else:
@@ -256,17 +281,6 @@ def render_result(last: dict, current_inputs: dict) -> None:
         st.caption("Test = the most recent window, untouched during model building. Accuracy is deliberately not shown as a headline: "
                    "only a small share of orders is late, so it would be misleading.")
 
-    # scenario pinning
-    scen = st.session_state.get(K_SCEN, [])
-    pc1, pc2 = st.columns([1, 3])
-    with pc1:
-        st.button("Pin to compare", key="pred_pin", on_click=pin_scenario, icon=":material/push_pin:",
-                  disabled=len(scen) >= MAX_SCENARIOS, width="stretch",
-                  help=f"Keep up to {MAX_SCENARIOS} results side by side.")
-    with pc2:
-        msg = st.session_state.get("pred_pin_msg")
-        st.caption(msg if msg else (f"{len(scen)} of {MAX_SCENARIOS} scenarios pinned." if scen else
-                                    "Change an input, predict again and pin each result to compare them."))
 
 
 def render_scenarios() -> None:
@@ -278,7 +292,10 @@ def render_scenarios() -> None:
                     config=charts.PLOTLY_CONFIG)
     tbl = pd.DataFrame([{"Scenario": s["label"], "Order": s["description"], "Estimated probability": ui.fmt_pct(s["probability"]),
                          "Risk band": s["risk_label"]} for s in scen])
-    st.dataframe(tbl, hide_index=True, width="stretch", key="pred_scenario_table")
+    st.dataframe(tbl, hide_index=True, width="stretch", key="pred_scenario_table", column_config={
+        "Scenario": st.column_config.TextColumn(width="small"), "Order": st.column_config.TextColumn(width="large"),
+        "Estimated probability": st.column_config.TextColumn(width="small"),
+        "Risk band": st.column_config.TextColumn(width="small")})
     st.button("Clear scenarios", key="pred_clear", on_click=clear_scenarios, icon=":material/delete:")
 
 
@@ -377,6 +394,7 @@ with tab_one:
                 vals[k] = v
         return vals
 
+    scroll_to_result = False
     if submitted:
         inputs = collect_inputs()
         _cleaned, errors, _warns = prediction.check_input(inputs, bundle)
@@ -402,10 +420,18 @@ with tab_one:
                 key = repr(sorted((k, str(v)) for k, v in inputs.items()))
                 st.session_state[K_LAST] = {"inputs": inputs, "result": res, "key": key, "description": H.describe_order(
                     {**inputs, "estimated_delivery_days": (res["derived_features"] or {}).get("estimated_delivery_days")})}
+                scroll_to_result = True
 
     last = st.session_state.get(K_LAST)
     if last:
-        render_result(last, collect_inputs())
+        with st.container(key="pred-result"):
+            if scroll_to_result:
+                with st.spinner("Scoring this order and preparing the result…"):
+                    render_result(last, collect_inputs())
+            else:
+                render_result(last, collect_inputs())
+        if scroll_to_result:     # on a phone the result starts far below the button: bring it into view once
+            st.html("<script>" + SCROLL_JS + "</script>", unsafe_allow_javascript=True)
     else:
         ui.empty_state("No prediction yet", "Fill in the order above and press **Predict Delay Risk**.", icon="target")
     render_scenarios()
@@ -473,7 +499,9 @@ with tab_batch:
             if s["n_invalid"]:
                 ui.section_header("Rows that could not be scored", f"{s['n_invalid']:,} row(s). Row numbers are file lines (the header is line 1).", icon="alert")
                 inv = out["invalid"]
-                st.dataframe(inv.head(500), hide_index=True, width="stretch", key="pred_invalid_rows")
+                st.dataframe(inv.head(500), hide_index=True, width="stretch", key="pred_invalid_rows", column_config={
+                    "csv_row": st.column_config.NumberColumn("File row", format="%d", width="small"),
+                    "problem": st.column_config.TextColumn("Problem", width="large")})
                 if len(inv) > 500:
                     st.caption(f"Showing the first 500 of {len(inv):,} problems.")
             if s["n_valid"] == 0:

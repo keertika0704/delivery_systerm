@@ -36,7 +36,7 @@ COLUMN_INFO: dict[str, tuple[str, str, str]] = {
     "order_delivered_customer_date": ("Delivered at", "Date and time the customer received the order.", "datetime"),
     "is_late": ("Late (1/0)", "1 = delivered on a calendar date after the estimate; 0 = on time or early.", "flag"),
     "delivery_status": ("Delivery status", "Readable version of is_late: late / on_time.", "status"),
-    "delivery_delay_days": ("Delay (days)", "Delivered date minus estimated date in whole days (negative = early).", "int"),
+    "delivery_delay_days": ("Days vs promised date", "Delivered date minus estimated date in whole days: below 0 = arrived early, 0 = on the promised day, above 0 = late.", "int"),
     "delivery_duration_days": ("Delivery time (days)", "Purchase to customer delivery, in days.", "days"),
     "estimated_delivery_days": ("Promised time (days)", "Delivery promise shown at checkout, in days.", "int"),
     "processing_days": ("Processing (days)", "Purchase to carrier hand-over, in days (known only after the event).", "days"),
@@ -103,6 +103,25 @@ def export_frame(df: pd.DataFrame, columns: Sequence[str] | None = None) -> pd.D
         status[late == 0] = "on_time"
         out["delivery_status"] = status
         out = out[[c for c in want if c in out.columns]]
+    return out
+
+
+def display_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """On-screen version of an :func:`export_frame` table: readable labels instead of raw data values
+    (``health_beauty`` -> ``Health beauty``, ``on_time`` -> ``On time``, ``sao paulo`` -> ``Sao Paulo``).
+
+    Display only: downloads keep the raw values so the CSV stays machine-friendly.
+    """
+    out = df.copy()
+    if "product_category" in out.columns:
+        out["product_category"] = out["product_category"].astype("string").str.replace("_", " ", regex=False).str.strip() \
+            .str.capitalize()
+    if "delivery_status" in out.columns:
+        out["delivery_status"] = out["delivery_status"].astype("string").map(
+            {"late": "Late", "on_time": "On time"}).astype("string")
+    for c in ("customer_city", "seller_city"):
+        if c in out.columns:
+            out[c] = out[c].astype("string").str.title()
     return out
 
 
@@ -302,9 +321,9 @@ def _p(p: Any) -> str:
     v = _fin(p)
     if v is None:
         return "p = n/a"
-    if v <= 1e-300:  # 0, or an underflowed value clipped to P_FLOOR (or a Bonferroni multiple of it)
+    if v < 0.001:  # also 0 / an underflowed value clipped to P_FLOOR: scientific notation is noise for a reader
         return "p < 0.001"
-    return f"p = {v:.2g}" if v < 0.001 else f"p = {v:.3f}"
+    return f"p = {v:.3f}"
 
 
 # --------------------------------------------------------------------------- #
@@ -343,30 +362,42 @@ def sort_insights(insights: Iterable[Any]) -> list[Any]:
 
 
 SINGLE_REGION_SECTION = "regional comparison (only one region in view)"
+SINGLE_CATEGORY_SECTION = "product-category comparison (only one category in view)"
+_CATEGORY_KINDS = ("category_duration", "category_delay", "category_freight")
 
 
 def comparable_insights(insights: Iterable[Any], min_orders: int) -> list[Any]:
     """Drop findings that compare a segment with itself.
 
     With a single customer state in view the "region vs overall" screen is vacuous (the one region IS the
-    overall), so its "none of the 1 regions is above" card is removed and the comparison is listed among the
-    skipped sections of the data-sufficiency note instead.  Everything else passes through unchanged.
+    overall), so its "none of the 1 regions is above" card is removed.  Likewise with a single product category in
+    view the three category cards (longest delivery, highest late rate, highest freight) would rank the category
+    against itself.  The skipped comparisons are listed in the data-sufficiency note instead.  Everything else passes
+    through unchanged.  Every consumer of :func:`src.insights.generate_insights` (the Reports page, the downloadable
+    report, the Overview headline cards) goes through this function so that page and file say the same thing.
     """
     from .insights import Insight  # local import: keeps this module importable without the insights stack
 
     items = list(insights)
-    vacuous = [i for i in items if getattr(i, "kind", "") == "region_high"
-               and int((getattr(i, "metrics", None) or {}).get("n_screened", 2) or 0) < 2
-               and not (getattr(i, "metrics", None) or {}).get("n_flagged")]
+
+    def _m(i: Any) -> dict:
+        return getattr(i, "metrics", None) or {}
+
+    vac_region = [i for i in items if getattr(i, "kind", "") == "region_high"
+                  and int(_m(i).get("n_screened", 2) or 0) < 2 and not _m(i).get("n_flagged")]
+    vac_cat = [i for i in items if getattr(i, "kind", "") in _CATEGORY_KINDS
+               and int(_m(i).get("n_categories", 2) or 0) < 2]
+    vacuous = vac_region + vac_cat
     if not vacuous:
         return items
     out = [i for i in items if not any(i is v for v in vacuous)]
     overview = next((i for i in out if getattr(i, "kind", "") == "overview"), None)
     n = int(getattr(overview, "n", 0) or 0)
     old = next((i for i in out if getattr(i, "kind", "") == "insufficient_data"), None)
-    sections = list((getattr(old, "metrics", None) or {}).get("sections", [])) if old is not None else []
-    if SINGLE_REGION_SECTION not in sections:
-        sections.insert(0, SINGLE_REGION_SECTION)
+    sections = list(_m(old).get("sections", [])) if old is not None else []
+    for flag, sec in ((vac_cat, SINGLE_CATEGORY_SECTION), (vac_region, SINGLE_REGION_SECTION)):
+        if flag and sec not in sections:
+            sections.insert(0, sec)
     note = Insight(
         "insufficient_data", "Insufficient data for some comparisons",
         f"With {n:,} orders and a minimum of {int(min_orders):,} orders per segment, there is not enough data to report: "

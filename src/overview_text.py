@@ -9,6 +9,7 @@ arguments.  All functions are safe on empty / tiny input and never raise or divi
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -18,7 +19,7 @@ from . import analytics as an
 from .config import DEFAULT_MIN_ORDERS, STATE_NAMES
 
 __all__ = ["Interpretation", "status_text", "duration_text", "monthly_text", "state_text",
-           "headline_insights", "insight_label", "insight_caveat", "STATISTICAL_KINDS"]
+           "headline_insights", "teaser", "insight_label", "insight_caveat", "STATISTICAL_KINDS"]
 
 #: Insight kinds that rest on a hypothesis test / correlation (shown as "Statistical association").
 STATISTICAL_KINDS = frozenset({"region_test", "same_state", "weight_freight", "processing_time", "month_high"})
@@ -26,6 +27,54 @@ _SEVERITY_RANK = {"alert": 0, "watch": 1, "info": 2}
 _HIDDEN_KINDS = frozenset({"overview", "no_data"})
 #: A month counts as well populated for a first-to-last comparison at this share of the median charted month.
 _WELL_POPULATED = 0.25
+
+
+def _pl(n: int, noun: str) -> str:
+    """'1 month' / '3 months'."""
+    return f"{n:,} {noun}" if n == 1 else f"{n:,} {noun}s"
+
+
+def teaser(text: str, limit: int = 230) -> str:
+    """Shorten ``text`` for a card without cutting through a statistic.
+
+    Whole sentences are kept while they fit in ``limit`` characters; if even the first sentence is too long it is cut
+    at the last ``; `` (a list item boundary), else at the last space, and ends with an ellipsis.  A text that already
+    fits is returned unchanged.
+    """
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    sentences, start = [], 0
+    for m in re.finditer(r"[.!?](?=\s+[A-Z])", text):      # a sentence ends at . ! ? followed by a capital letter
+        sentences.append(text[start:m.end()])
+        start = m.end() + 1
+    sentences.append(text[start:])
+    out = ""
+    for sent in sentences:
+        cand = f"{out} {sent}".strip()
+        if len(cand) > limit:
+            break
+        out = cand
+    if out:
+        return out if out != text else text
+    cut = text[:limit]
+    depth, item_end, open_at = 0, -1, []
+    for idx, ch in enumerate(cut):          # last "; " list-item boundary outside any parenthesis
+        if ch == "(":
+            depth += 1
+            open_at.append(idx)
+        elif ch == ")" and depth:
+            depth -= 1
+            open_at.pop()
+        elif ch == ";" and depth == 0 and cut[idx + 1:idx + 2] == " ":
+            item_end = idx
+    if item_end > limit * 0.4:
+        cut = cut[:item_end]
+    else:                                    # no clean boundary: stop at a space and never leave a bracket open
+        cut = cut.rsplit(" ", 1)[0]
+        if open_at and open_at[0] < len(cut):
+            cut = cut[:open_at[0]]
+    return cut.rstrip(" ,;:(") + " ..."
 
 
 @dataclass(frozen=True)
@@ -137,11 +186,13 @@ def monthly_text(monthly: pd.DataFrame | None, min_orders: int = DEFAULT_MIN_ORD
     n_months = len(m)
     rel = m[(m["n_orders"] >= min_orders) & m["late_rate"].notna()].sort_values("purchase_year_month").reset_index(drop=True)
     n_small = n_months - len(rel)
-    tail = (f" {n_small} month(s) with fewer than {min_orders:,} orders are not charted as rates because "
-            "their rates would be too noisy." if n_small else "")
+    one = n_small == 1
+    tail = (f" {_pl(n_small, 'month')} with fewer than {min_orders:,} orders {'is' if one else 'are'} not charted as "
+            f"{'a rate' if one else 'rates'} because {'its rate' if one else 'their rates'} would be too noisy."
+            if n_small else "")
     if rel.empty:
         return Interpretation(f"No month in this selection has {min_orders:,} or more orders "
-                              f"({n_months} month(s), {int(m['n_orders'].sum()):,} orders in total), so no reliable "
+                              f"({_pl(n_months, 'month')}, {int(m['n_orders'].sum()):,} orders in total), so no reliable "
                               "monthly rate or trend can be described. Widen the date range to see one." )
     if len(rel) == 1:
         only = rel.iloc[0]
@@ -200,8 +251,10 @@ def state_text(state_perf: pd.DataFrame | None, min_orders: int = DEFAULT_MIN_OR
     ok = sp[(sp["n_orders"] >= min_orders) & sp["late_rate"].notna()].sort_values("late_rate", ascending=False)
     small = sp[sp["n_orders"] < min_orders]
     n_small = len(small)
-    small_txt = (f" {n_small} state(s) with fewer than {min_orders:,} orders ({int(small['n_orders'].sum()):,} orders "
-                 "in total) are shown greyed out because their rates are unreliable." if n_small else "")
+    one = n_small == 1
+    small_txt = (f" {_pl(n_small, 'state')} with fewer than {min_orders:,} orders ({int(small['n_orders'].sum()):,} orders "
+                 f"in total) {'is' if one else 'are'} shown greyed out because {'its rate is' if one else 'their rates are'} "
+                 "unreliable." if n_small else "")
     if ok.empty:
         return Interpretation(f"No state has {min_orders:,} or more orders in this selection, so state rates are "
                               "too noisy to rank. Lower the minimum-orders control or widen the filters." + small_txt)

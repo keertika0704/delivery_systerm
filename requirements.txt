@@ -1,19 +1,17 @@
 # DeliveryIQ runtime + development dependencies (tested with Python 3.12)
+# Runtime (app, preprocessing, training)
 pandas>=3.0,<4
 numpy>=2.0,<3
 scipy>=1.14
 scikit-learn>=1.6
 plotly>=6.0
-matplotlib>=3.9
-seaborn>=0.13
 streamlit>=1.50
 joblib>=1.4
-pyarrow>=17
-requests>=2.31
+pyarrow>=17            # parquet read/write
 
-# notebooks
+# notebooks (matplotlib is used only by the notebooks and their build scripts)
+matplotlib>=3.9
 nbformat>=5.10
-nbconvert>=7.16
 nbclient>=0.10
 ipykernel>=6.29
 

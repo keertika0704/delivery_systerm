@@ -295,6 +295,34 @@ def segment_duration_text(perf: pd.DataFrame, key: str, summary: Mapping, min_or
 # --------------------------------------------------------------------------- #
 # Tab 3: weight & freight
 # --------------------------------------------------------------------------- #
+_BIN_RE = re.compile(r"^\s*(?P<open>[\[(])\s*(?P<lo>-?[\d.]+)\s*,\s*(?P<hi>-?[\d.]+)\s*[\])]\s*$")
+
+
+def _edge(x: str) -> str:
+    v = float(x)
+    return f"{v:,.0f}" if v == round(v) else f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
+def friendly_bin(label: object, unit: str = "") -> str:
+    """Plain wording for a bin label: ``[0, 500]`` -> ``0 to 500 g``, ``(10000, 30000]`` -> ``over 10,000 to 30,000 g``,
+    ``> 30000`` -> ``over 30,000 g`` (currency units go in front: ``R$ 10 to 20``).  Unknown shapes are returned as is."""
+    text = str(label).strip()
+    cur = unit.strip() == "R$"
+    u = f"R$ " if cur else ""
+    tail = "" if cur or not unit else f" {unit}"
+    m = _BIN_RE.match(text)
+    if m:
+        lo, hi = _edge(m["lo"]), _edge(m["hi"])
+        pre = "over " if m["open"] == "(" else ""
+        return f"{pre}{u}{lo} to {u}{hi}{tail}" if not cur else f"{pre}{u}{lo} to {hi}"
+    if text.startswith(">"):
+        try:
+            return f"over {u}{_edge(text[1:].strip())}{tail}"
+        except ValueError:
+            return text
+    return f"{u}{text}{tail}" if text and (cur or unit) and text.replace(".", "", 1).replace("-", "", 1).isdigit() else text
+
+
 def binned_observed(bins: pd.DataFrame, what: str, unit: str, min_orders: int, overall_rate: float) -> str | None:
     """Late rate and delivery time in the lowest vs highest bin of ``what`` ('weight' / 'freight')."""
     if bins is None or bins.empty:
@@ -306,12 +334,12 @@ def binned_observed(bins: pd.DataFrame, what: str, unit: str, min_orders: int, o
                 "Lower the minimum or widen the filters.")
     first, last = rel.iloc[0], rel.iloc[-1]
     top = rel.sort_values(["late_rate", "n_orders"], ascending=[False, False], kind="mergesort").iloc[0]
-    lab = (lambda b: f"{b} {unit}".strip())
+    lab = (lambda b: friendly_bin(b, unit))
     low_word, high_word = ("lightest", "heaviest") if what == "weight" else ("cheapest", "most expensive")
     s = (f"The {low_word} group ({lab(first['bin'])}, {n_(first['n_orders'])}) has a late rate of **{pct(first['late_rate'])}** "
          f"and a mean delivery time of {num(first['mean_duration'])} days; the {high_word} group ({lab(last['bin'])}, "
          f"{n_(last['n_orders'])}) has **{pct(last['late_rate'])}** and {num(last['mean_duration'])} days. "
-         f"The highest late rate is in {lab(top['bin'])} ({pct(top['late_rate'])}, {n_(top['n_orders'])}) "
+         f"The highest late rate is for the group {lab(top['bin'])} ({pct(top['late_rate'])}, {n_(top['n_orders'])}) "
          f"versus {pct(overall_rate)} overall.")
     if small:
         s += f" {small} group(s) with fewer than {min_orders:,} orders are shown hatched and not interpreted."

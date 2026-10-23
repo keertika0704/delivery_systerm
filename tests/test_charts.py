@@ -432,3 +432,23 @@ def test_model_charts_malformed_values(metrics):
     assert _is_empty_fig(C.confusion_matrix_chart(bad))
     assert isinstance(C.roc_curve_chart(bad), go.Figure)
     assert _is_empty_fig(C.feature_importance_chart(bad))
+
+
+@needs_data
+def test_heatmap_masked_cells_are_visible_and_cells_carry_their_values(df):
+    mats = A.state_matrix(df)
+    fig = C.state_pair_heatmap(mats, min_orders=100)
+    assert fig.layout.plot_bgcolor == C.MASKED_CELL != C.MASKED       # masked cells are a visible grey, not 'missing' white
+    tr = fig.data[0]
+    assert tr.texttemplate == "%{z:.1%}"                              # every drawn cell shows its value
+    dur = C.state_pair_heatmap(mats, metric="mean_duration", min_orders=100).data[0]
+    assert dur.texttemplate == "%{z:.1f}"
+
+
+def test_legends_sit_above_the_top_axis_tick():
+    d = pd.DataFrame({"purchase_year_month": ["2018-01", "2018-02", "2018-03"], "n_orders": [500, 600, 700],
+                      "n_late": [30, 40, 50], "late_rate": [0.06, 0.067, 0.071], "on_time_rate": [0.94, 0.933, 0.929],
+                      "late_ci_low": [0.04, 0.05, 0.05], "late_ci_high": [0.08, 0.09, 0.09], "mean_duration": [11.0, 12.0, 13.0],
+                      "reliable": [True, True, True]})
+    fig = C.monthly_performance_chart(d, min_orders=100)
+    assert fig.layout.legend.y > 1.0 and fig.layout.legend.yanchor == "bottom"

@@ -265,7 +265,7 @@ def interpret_map(perf: pd.DataFrame, kpi: dict, high: pd.DataFrame, min_orders:
                     f"{r['state_pair']} at {ui.fmt_pct(r['late_rate'])} ({ui.fmt_n(r['n_orders'])}). ")
     act += ("This data cannot show why orders are late, and it describes historical orders, not current "
             "logistics performance.")
-    out.append(("alert" if n_high else "info", "Suggested action", act))
+    out.append(("action", "Suggested action", act))
     return out
 
 
@@ -363,16 +363,17 @@ with tab_map:
     _sticky("reg_map_metric")
     metric_label = st.radio("Map metric", list(MAP_METRICS), horizontal=True, key="reg_map_metric")
     metric = MAP_METRICS[metric_label]
-    map_col, txt_col = st.columns([3, 2], gap="large")
-    with map_col:
-        fig_map = charts.brazil_choropleth(perf, metric, min_orders=min_orders)
-        fig_map.update_layout(height=620)
-        _plot(fig_map, "reg_map_chart")
-    with txt_col:
-        for kind, label, text in interpret_map(perf, kpi, high, min_orders, metric, pairs_all):
-            ui.callout(kind, label, text)
-        st.caption("Labels: Observed = counted in the data; Statistical association = interval based, unadjusted; "
-                   "Suggested action = a lead to investigate. No model predictions are shown on this page.")
+    with st.container(key="stack-md-map"):      # below ~1100 px the commentary goes under the map, not into a 200 px column
+        map_col, txt_col = st.columns([3, 2], gap="large")
+        with map_col:
+            fig_map = charts.brazil_choropleth(perf, metric, min_orders=min_orders)
+            fig_map.update_layout(height=620)
+            _plot(fig_map, "reg_map_chart")
+        with txt_col:
+            for kind, label, text in interpret_map(perf, kpi, high, min_orders, metric, pairs_all):
+                ui.callout(kind, label, text)
+            st.caption("Labels: Observed = counted in the data; Statistical association = interval based, unadjusted; "
+                       "Suggested action = a lead to investigate. No model predictions are shown on this page.")
 
     ui.section_header("Regional performance table",
                       "One row per customer state. Click a column header to sort. 'Assessment' compares each "
@@ -396,7 +397,7 @@ with tab_map:
             view, hide_index=True, width="stretch", key="reg_table", height=_height(len(view)),
             column_config={
                 "customer_state": st.column_config.TextColumn("State", width="small"),
-                "state_name": st.column_config.TextColumn("Name", width="small"),
+                "state_name": st.column_config.TextColumn("Name", width="medium"),
                 "n_orders": st.column_config.NumberColumn("Orders (n)", format="localized"),
                 "on_time_rate": st.column_config.NumberColumn("On-time rate", format="percent"),
                 "late_rate": st.column_config.NumberColumn("Late rate", format="percent"),
@@ -468,7 +469,7 @@ with tab_cmp:
             cmp_view, hide_index=True, width="stretch", key="reg_cmp_table", height=_height(len(cmp_view)),
             column_config={
                 "customer_state": st.column_config.TextColumn("State", width="small"),
-                "name": st.column_config.TextColumn("Name", width="small"),
+                "name": st.column_config.TextColumn("Name", width="medium"),
                 "n_orders": st.column_config.NumberColumn("Orders (n)", format="localized"),
                 "late_rate": st.column_config.NumberColumn("Late rate", format="percent"),
                 "late_ci": st.column_config.TextColumn(f"Late rate {CI_LEVEL} CI", width="medium"),
@@ -552,7 +553,7 @@ with tab_high:
                 hide_index=True, width="stretch", key="reg_high_table", height=_height(len(hv)),
                 column_config={
                     "customer_state": st.column_config.TextColumn("State", width="small"),
-                    "name": st.column_config.TextColumn("Name", width="small"),
+                    "name": st.column_config.TextColumn("Name", width="medium"),
                     "n_orders": st.column_config.NumberColumn("Orders (n)", format="localized"),
                     "late_rate": st.column_config.NumberColumn("Late rate", format="percent"),
                     "late_ci": st.column_config.TextColumn(f"Late rate {CI_LEVEL} CI"),
@@ -580,7 +581,7 @@ with tab_high:
                        "adjustment. Statistical significance is not the same as practical importance (check the "
                        "excess and the order count) and none of this shows why "
                        f"{'these states are' if many else 'this state is'} slower.")
-            ui.callout("alert", "Suggested action",
+            ui.callout("action", "Suggested action",
                        "Investigate flagged states first on the Seller → customer routes tab: is the excess "
                        "concentrated in a few seller states or routes? Then compare their late orders with the "
                        "delivery promise made at checkout.")

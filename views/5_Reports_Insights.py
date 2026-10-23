@@ -18,6 +18,7 @@ import streamlit as st  # noqa: E402
 
 from src import analytics as an  # noqa: E402
 from src import charts, config, exports, insights as ins, ui  # noqa: E402
+from src.prediction_helpers import friendly_feature_text  # noqa: E402
 
 KEY = "rep_"
 DASH = ui.DASH
@@ -37,9 +38,9 @@ PAGE_CSS = """
 .rp-card{background:#fff; border:1px solid var(--border); border-left:5px solid var(--sev); border-radius:14px;
   padding:.95rem 1.05rem .9rem; box-shadow:var(--shadow); min-width:0;}
 .rp-card-top{display:flex; flex-wrap:wrap; align-items:center; gap:.4rem; margin-bottom:.45rem;}
-.rp-sev{font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--sev);
+.rp-sev{font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--sev-text);
   border:1px solid var(--sev); border-radius:999px; padding:.1rem .5rem;}
-.rp-n{margin-left:auto; font-size:.78rem; color:var(--slate-light); font-weight:600; font-variant-numeric:tabular-nums;}
+.rp-n{margin-left:auto; font-size:.78rem; color:var(--slate-text); font-weight:600; font-variant-numeric:tabular-nums;}
 .rp-head{font-size:1.02rem; font-weight:700; color:var(--navy); margin:.1rem 0 .35rem; line-height:1.3;}
 .rp-text{font-size:.88rem; color:#334155; line-height:1.55; margin:0 0 .6rem; overflow-wrap:anywhere;}
 .rp-chips{display:flex; flex-wrap:wrap; gap:.35rem;}
@@ -60,7 +61,9 @@ PAGE_CSS = """
 @media (max-width:640px){ .rp-grid{grid-template-columns:minmax(0,1fr);} }
 """
 
-SEVERITY = {"alert": ("Alert", "#DC2626"), "watch": ("Watch", "#D97706"), "info": ("Info", "#64748B")}
+# (label, accent colour for the card edge / badge border, text colour with >= 4.5:1 contrast on white)
+SEVERITY = {"alert": ("Alert", "#DC2626", "#B91C1C"), "watch": ("Watch", "#D97706", "#92400E"),
+            "info": ("Info", "#64748B", "#475569")}
 TAG_CLASS = {exports.OBSERVED: "observed", exports.ASSOCIATION: "association", exports.DATA_NOTE: "data",
              "Model prediction": "model", "Suggested action": "action"}
 
@@ -137,7 +140,9 @@ def step_page(delta: int, n_pages: int) -> None:
 # --------------------------------------------------------------------------- #
 @st.cache_data(show_spinner=False, max_entries=12)
 def cached_insights(_df: pd.DataFrame, fkey: tuple, min_orders: int, alpha: float):
-    return ins.generate_insights(_df, min_orders, alpha)
+    """The findings shown on this page AND written to the summary report: a single state or category in view cannot be
+    compared with itself, so those cards are replaced by a data-sufficiency note (``exports.comparable_insights``)."""
+    return exports.comparable_insights(ins.generate_insights(_df, min_orders, alpha), min_orders)
 
 
 @st.cache_data(show_spinner=False, max_entries=12)
@@ -148,7 +153,7 @@ def cached_regional(_df: pd.DataFrame, fkey: tuple, min_orders: int, alpha: floa
 @st.cache_data(show_spinner=False, max_entries=6)
 def cached_summary(_df: pd.DataFrame, fkey: tuple, description: str, min_orders: int, alpha: float,
                    _metrics: dict | None, metrics_sig: str) -> str:
-    items = ins.generate_insights(_df, min_orders, alpha)
+    items = exports.comparable_insights(ins.generate_insights(_df, min_orders, alpha), min_orders)
     return ins.summary_report(_df, description, items, _metrics, alpha=alpha)
 
 
@@ -207,10 +212,10 @@ st.html('<div class="rp-strip">'
         f'<div class="rp-how">{tag("Suggested action")}<p>Where an operations manager could look next: a lead to check, never a verdict.</p></div>'
         '</div>')
 cols = st.columns(4)
-for col, (path, label, icon) in zip(cols, [("pages/1_Overview.py", "Overview", ":material/dashboard:"),
-                                            ("pages/2_Delay_Analysis.py", "Delay Analysis", ":material/query_stats:"),
-                                            ("pages/3_Regional_Intelligence.py", "Regional Intelligence", ":material/map:"),
-                                            ("pages/4_Delay_Prediction.py", "Delay Prediction", ":material/psychology:")]):
+for col, (path, label, icon) in zip(cols, [("views/1_Overview.py", "Overview", ":material/dashboard:"),
+                                            ("views/2_Delay_Analysis.py", "Delay Analysis", ":material/query_stats:"),
+                                            ("views/3_Regional_Intelligence.py", "Regional Intelligence", ":material/map:"),
+                                            ("views/4_Delay_Prediction.py", "Delay Prediction", ":material/psychology:")]):
     with col:
         page_link(path, label, icon, label)
 
@@ -240,8 +245,7 @@ with tab_find:
                        "There is nothing to analyse. Widen the date range or clear the state / category filters in the sidebar.")
         insights_list = ins.generate_insights(df, min_orders, alpha)
     else:
-        # a single state in view cannot be compared with itself: that card is replaced by a data-sufficiency note
-        insights_list = exports.comparable_insights(cached_insights(df, fkey, int(min_orders), alpha), int(min_orders))
+        insights_list = cached_insights(df, fkey, int(min_orders), alpha)
         k = an.kpi_summary(df)
         lo, hi = an.wilson_ci(k["n_late"], k["n_orders"], alpha)
         flagged = [i for i in insights_list if i.kind not in ("overview",) and i.severity in ("alert", "watch")]
@@ -277,13 +281,13 @@ with tab_find:
                                                     "descriptive findings.", icon="check")
         cards = []
         for i in shown:
-            label, color = SEVERITY.get(i.severity, SEVERITY["info"])
+            label, color, text_color = SEVERITY.get(i.severity, SEVERITY["info"])
             warn = ""
             small = ui.small_sample_note(i.n, min_orders) if i.kind not in ("insufficient_data", "no_data") else None
             if small:
                 warn = f'<div class="rp-warn">{ui.esc(small)}</div>'
             cards.append(
-                f'<div class="rp-card" style="--sev:{color}"><div class="rp-card-top">{tag(exports.insight_type_label(i))}'
+                f'<div class="rp-card" style="--sev:{color};--sev-text:{text_color}"><div class="rp-card-top">{tag(exports.insight_type_label(i))}'
                 f'<span class="rp-sev">{ui.esc(label)}</span><span class="rp-n">{ui.esc(ui.fmt_n(i.n))}</span></div>'
                 f'<div class="rp-head">{ui.esc(i.title)}</div><p class="rp-text">{ui.esc(i.text)}</p>'
                 f'<div class="rp-chips">{chips(exports.insight_metric_pairs(i))}</div>{warn}</div>')
@@ -500,7 +504,8 @@ with tab_ex:
         f1, f2 = st.columns([3, 2])
         with f1:
             search = st.text_input("Search", key=KEY + "ex_search", placeholder="Order ID, city or product category",
-                                   help="Case-insensitive match on order ID, customer city, seller city and product category.")
+                                   help="Case-insensitive match on order ID, customer city, seller city and product category. "
+                                        "Accents and underscores are ignored, so 'São Paulo' and 'Health beauty' work as shown.")
         with f2:
             status_label = st.radio("Delivery status", ["All", "On time", "Late"], horizontal=True, key=KEY + "ex_status")
         g1, g2, g3 = st.columns(3)
@@ -577,10 +582,12 @@ with tab_ex:
                 else:
                     fmt = {"int": "%d", "flag": "%d", "float": "%.2f", "money": "R$ %.2f", "days": "%.1f"}[kind]
                     cfg[c] = st.column_config.NumberColumn(label, help=desc, format=fmt)
-            show_df = exports.export_frame(view, shown_cols)
+            show_df = exports.display_frame(exports.export_frame(view, shown_cols))
             st.dataframe(show_df, hide_index=True, width="stretch", height=min(740, 38 + 35 * (len(show_df) + 1)),
                          column_config=cfg, key=KEY + "ex_table")
 
+            if "delivery_delay_days" in shown_cols:
+                st.caption("Days vs promised date: negative = the order arrived early, 0 = on the promised day, positive = late.")
             p1, p2, p3, p4 = st.columns([1, 1, 1.4, 3])
             with p1:
                 st.button("Previous", key=KEY + "ex_prev", on_click=step_page, args=(-1, n_pages), disabled=info["page"] <= 1,
@@ -618,7 +625,7 @@ with tab_model:
     if metrics is None or head is None:
         ui.empty_state("Model evaluation is not available",
                        "The metrics file written by the training step was not found or could not be read. Train the model once "
-                       "(about a minute) and reload this page.", icon="cpu")
+                       "(about two minutes) and reload this page.", icon="cpu")
         st.code(ui.TRAIN_COMMAND, language="bash")
     else:
         sig_noun, sig_cmp = exports.signal_phrase(head["test_roc_auc"])
@@ -758,7 +765,7 @@ with tab_model:
                         key=KEY + "m_imp")
         cmp_note = exports.dig(metrics, "permutation_importance", "comparison_note")
         if cmp_note:
-            note("info", "Model prediction", "Is the ranking stable?", str(cmp_note))
+            note("info", "Model prediction", "Is the ranking stable?", friendly_feature_text(str(cmp_note)))
 
         # ---- which metrics matter -----------------------------------------------------
         ui.section_header("Which metrics matter for delay-risk prediction", icon="info")

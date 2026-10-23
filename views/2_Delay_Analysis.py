@@ -44,15 +44,15 @@ _PAGE_CSS = """
   box-shadow:var(--shadow); margin:.2rem 0 .4rem; min-width:0;}
 .da-card .hd{display:flex; justify-content:space-between; align-items:flex-start; gap:.6rem;}
 .da-card .ttl{font-weight:700; color:var(--navy); font-size:.98rem; line-height:1.3;}
-.da-card .kind{font-size:.68rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--slate-light);}
+.da-card .kind{font-size:.68rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--slate-text);}
 .da-chip{display:inline-block; font-size:.72rem; font-weight:700; padding:.12rem .55rem; border-radius:999px;
   white-space:nowrap; background:#F1F5F9; color:#475569;}
 .da-chip.small{background:#DBEAFE; color:#1E40AF;} .da-chip.medium{background:#BFDBFE; color:#1E3A8A;}
-.da-chip.large{background:#1E3A8A; color:#fff;} .da-chip.skip{background:#F1F5F9; color:#64748B;}
+.da-chip.large{background:#1E3A8A; color:#fff;} .da-chip.skip{background:#F1F5F9; color:#526071;}
 .da-card .big{font-size:1.7rem; font-weight:800; color:var(--navy); letter-spacing:-.02em; margin:.45rem 0 .05rem;
   font-variant-numeric:tabular-nums;}
-.da-card .big small{font-size:.8rem; font-weight:600; color:var(--slate-light); letter-spacing:0; margin-left:.3rem;}
-.da-card .sub{color:var(--slate-light); font-size:.8rem; line-height:1.45;}
+.da-card .big small{font-size:.8rem; font-weight:600; color:var(--slate-text); letter-spacing:0; margin-left:.3rem;}
+.da-card .sub{color:var(--slate-text); font-size:.8rem; line-height:1.45;}
 .da-card .stats{min-height:3.3em; color:#334155; font-size:.82rem; margin-top:.5rem; padding-top:.5rem; border-top:1px solid var(--border);
   line-height:1.6; font-variant-numeric:tabular-nums;}
 </style>
@@ -163,7 +163,7 @@ def tab_trends(df, fkey, min_orders):
             "CI high (pp)": 100 * flagged["diff_ci_high"], "Adjusted p": [nar.pval(p) for p in flagged["p_bonferroni"]],
         })
         st.dataframe(t, hide_index=True, width="stretch", column_config={
-            "Orders (n)": st.column_config.NumberColumn(format="%d"), "Late orders": st.column_config.NumberColumn(format="%d"),
+            "Orders (n)": st.column_config.NumberColumn(format="localized"), "Late orders": st.column_config.NumberColumn(format="localized"),
             "Late rate (%)": st.column_config.NumberColumn(format="%.1f"),
             "Other months (%)": st.column_config.NumberColumn(format="%.1f"),
             "Difference (pp)": st.column_config.NumberColumn(format="%+.1f"),
@@ -331,23 +331,23 @@ def tab_categories(df, fkey, min_orders):
             "CI low (%)": 100 * tbl["late_ci_low"], "CI high (%)": 100 * tbl["late_ci_high"],
             "vs overall (pp)": 100 * (tbl["late_rate"] - overall),
             "Mean days": tbl["mean_duration"], "Median days": tbl["median_duration"],
-            "Mean freight (R$)": tbl["mean_freight"], "Freight / price (%)": 100 * tbl["mean_freight_ratio"],
+            "Freight (R$)": tbl["mean_freight"], "Freight / price (%)": 100 * tbl["mean_freight_ratio"],
             "Reliable": tbl["n_orders"] >= min_orders,
         })
         st.dataframe(show_df, hide_index=True, width="stretch", height=min(560, 76 + 35 * len(show_df)), column_config={
             # pixel widths that add up to less than the content width at 1440 px, so the last columns are not cut off
-            "Category": st.column_config.TextColumn(width=140),
-            "Orders (n)": st.column_config.NumberColumn(format="%d", width=76),
-            "Late orders": st.column_config.NumberColumn(format="%d", width=84),
-            "Late rate (%)": st.column_config.NumberColumn(format="%.1f", width=84, help="Observed share of orders delivered after the estimated date"),
+            "Category": st.column_config.TextColumn(width=182),
+            "Orders (n)": st.column_config.NumberColumn(format="localized", width=64),
+            "Late orders": st.column_config.NumberColumn(format="localized", width=72),
+            "Late rate (%)": st.column_config.NumberColumn(format="%.1f", width=78, help="Observed share of orders delivered after the estimated date"),
             "CI low (%)": st.column_config.NumberColumn(format="%.1f", width=66, help="95% Wilson interval, lower bound"),
-            "CI high (%)": st.column_config.NumberColumn(format="%.1f", width=68, help="95% Wilson interval, upper bound"),
-            "vs overall (pp)": st.column_config.NumberColumn(format="%+.1f", width=98, help="Late rate minus the overall late rate in this view"),
-            "Mean days": st.column_config.NumberColumn(format="%.1f", width=80),
-            "Median days": st.column_config.NumberColumn(format="%.1f", width=88),
-            "Mean freight (R$)": st.column_config.NumberColumn(format="%.2f", width=108),
+            "CI high (%)": st.column_config.NumberColumn(format="%.1f", width=70, help="95% Wilson interval, upper bound"),
+            "vs overall (pp)": st.column_config.NumberColumn(format="%+.1f", width=92, help="Late rate minus the overall late rate in this view"),
+            "Mean days": st.column_config.NumberColumn(format="%.1f", width=70),
+            "Median days": st.column_config.NumberColumn(format="%.1f", width=82),
+            "Freight (R$)": st.column_config.NumberColumn(format="%.2f", width=88, help="Mean freight per order, in reais"),
             "Freight / price (%)": st.column_config.NumberColumn(format="%.1f", width=108, help="Mean of freight divided by item price"),
-            "Reliable": st.column_config.CheckboxColumn(width=60, help=f"True when the category has at least {min_orders:,} orders"),
+            "Reliable": st.column_config.CheckboxColumn(width=66, help=f"True when the category has at least {min_orders:,} orders"),
         })
         cap = f"{nar.plural(len(show_df), 'category', 'categories')} shown"
         if only_reliable and n_hidden:
@@ -502,10 +502,25 @@ def _reading(res, extra: pd.DataFrame | None = None, extra_title: str = "", col:
             st.dataframe(extra, hide_index=True, width="stretch")
 
 
+GLOSSARY = """
+- **p-value**: how surprising the pattern would be if the two things were really unrelated. Small (below 0.05) means "unlikely to be chance alone"; it says nothing about how big or how important the pattern is.
+- **Holm-adjusted p**: the p-value corrected for running several tests at once, so a few "significant" results cannot appear by luck.
+- **Effect size**: how big the pattern is, whatever the sample size. The label (negligible / small / medium / large) is the one to read first.
+- **Cramér's V**: strength of the link between two categories, from 0 (none) to 1 (perfect). Around 0.1 is small, 0.3 medium, 0.5 large.
+- **rho (Spearman)**: strength of a relation between two measures from -1 to 1 using ranks; 0 means none, positive means they rise together.
+- **Wilson interval (95% CI)**: the range a rate could plausibly take given the number of orders. A wide interval means few orders.
+- **Epsilon-squared / rank-biserial**: effect sizes for comparing delivery times between groups (0 = no difference, larger = bigger difference).
+- **Chi-square, Mann-Whitney, Kruskal-Wallis**: the test names; they compare late rates (chi-square) or delivery times (the other two) between groups.
+- **Days vs promised date**: negative = the order arrived early, positive = late.
+"""
+
+
 def tab_tests(df, fkey, min_orders):
     note("caveat", "Statistical significance is not practical importance, and neither is causation. With tens of thousands of orders, "
                    "even tiny differences are 'significant' (p < 0.05), so judge each result by its effect size and confidence interval. "
                    "All tests describe associations in historical observational data.")
+    with st.expander("What do these statistical terms mean? (plain-language glossary)"):
+        st.markdown(GLOSSARY)
     if df.empty:
         return empty_tab()
     res, cis = _tests(df, fkey)
@@ -537,7 +552,7 @@ def tab_tests(df, fkey, min_orders):
             "Holm-adjusted p": st.column_config.TextColumn(width=95),
             "Significant after Holm": st.column_config.CheckboxColumn(width=140, help="Holm-adjusted p < 0.05"),
             "Effect size": st.column_config.NumberColumn(format="%.3f", width=80), "Effect": st.column_config.TextColumn(width=95),
-            "n": st.column_config.NumberColumn(format="%d", width=65)})
+            "n": st.column_config.NumberColumn(format="localized", width=65)})
 
     ui.section_header("Is delivery status related to a category? Chi-square tests",
                       "Tests whether the late rate differs between the levels of each variable; effect size is Cramér's V "

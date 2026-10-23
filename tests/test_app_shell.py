@@ -16,7 +16,7 @@ from src.analytics import apply_filters
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGE_FILES = {
-    "1_Overview.py": "overview",
+    "1_Overview.py": None,   # default page: served at "/", deliberately has no url_path (a dead /overview URL)
     "2_Delay_Analysis.py": "delay-analysis",
     "3_Regional_Intelligence.py": "regional-intelligence",
     "4_Delay_Prediction.py": "delay-prediction",
@@ -135,8 +135,15 @@ def test_normalise_dates_edge_cases():
 def test_five_navigation_targets_exist_and_are_declared():
     src = (ROOT / "app.py").read_text()
     for fn, url_path in PAGE_FILES.items():
-        assert (ROOT / "pages" / fn).is_file(), fn
-        assert f'"pages/{fn}"' in src and f'url_path="{url_path}"' in src
+        assert (ROOT / "views" / fn).is_file(), fn
+        assert f'"views/{fn}"' in src
+        if url_path:
+            assert f'url_path="{url_path}"' in src
+    assert 'url_path="overview"' not in src       # the default page is served at "/", /overview would be a dead URL
+    # No legacy ``pages/`` directory: Streamlit auto-discovers it and, on a deep link as the first request after a server
+    # start, shows a "Page not found" modal because its slugs differ from the url_path values registered in app.py.
+    assert not (ROOT / "pages").exists()
+    assert "pages/" not in src.replace("views/*.py", "")
     assert 'position="hidden"' in src and "default=True" in src
     assert (ROOT / ".streamlit" / "config.toml").is_file()
 
@@ -157,7 +164,7 @@ def test_app_runs_without_exception_and_renders_shell():
 @needs_data
 @pytest.mark.parametrize("fn", list(PAGE_FILES))
 def test_each_page_runs_standalone(fn):
-    at = AppTest.from_file(str(ROOT / "pages" / fn), default_timeout=TIMEOUT).run()
+    at = AppTest.from_file(str(ROOT / "views" / fn), default_timeout=TIMEOUT).run()
     assert not at.exception, [e.value for e in at.exception]
 
 
@@ -215,7 +222,7 @@ def test_invalid_stored_filter_values_are_sanitised():
 
 @needs_data
 def test_empty_filter_result_is_handled_by_page_stub():
-    at = AppTest.from_file(str(ROOT / "pages" / "1_Overview.py"), default_timeout=TIMEOUT)
+    at = AppTest.from_file(str(ROOT / "views" / "1_Overview.py"), default_timeout=TIMEOUT)
     at.session_state[ui.K_DATE] = (date(2016, 9, 15), date(2016, 9, 15))
     at.session_state[ui.K_STATES] = ["AC"]
     at.session_state[ui.K_CATEGORIES] = ["unknown"]
@@ -268,7 +275,7 @@ def test_missing_data_shows_friendly_setup_page(monkeypatch, tmp_path):
 
 def test_missing_data_on_a_page_stops_with_friendly_error(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "ORDERS_DELIVERED_PATH", tmp_path / "nope.parquet")
-    at = AppTest.from_file(str(ROOT / "pages" / "2_Delay_Analysis.py"), default_timeout=TIMEOUT).run()
+    at = AppTest.from_file(str(ROOT / "views" / "2_Delay_Analysis.py"), default_timeout=TIMEOUT).run()
     assert not at.exception
     assert "Processed data not found" in _html(at)
     assert any("src.preprocessing" in c.value for c in at.code)
@@ -311,3 +318,113 @@ def test_model_and_metrics_load_when_present():
     assert not at.exception
     ok_model, ok_metrics, n_eligible = at.session_state["out"]
     assert ok_model and ok_metrics and n_eligible > 0
+
+
+# --------------------------------------------------------------------------- #
+# Review round: mobile drawer, contrast, tablet layout
+# --------------------------------------------------------------------------- #
+def _lum(h: str) -> float:
+    h = h.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+
+def _contrast(fg: str, bg: str) -> float:
+    a, b = sorted((_lum(fg), _lum(bg)), reverse=True)
+    return (a + 0.05) / (b + 0.05)
+
+
+def test_small_text_colours_meet_wcag_aa():
+    css = ui._css()
+    # sidebar labels sit on the navy sidebar / the darker info panel
+    for rule in (".diq-side-label{", ".diq-info .k{", ".diq-info .hd{"):
+        block = css[css.index(rule):css.index("}", css.index(rule))]
+        colour = re.search(r"color:(#[0-9A-Fa-f]{6})", block).group(1)
+        assert _contrast(colour, "#111C33") >= 4.5 and _contrast(colour, "#0F172A") >= 4.5, (rule, colour)
+    # secondary text on white / page / light-grey cards
+    token = re.search(r"--slate-text:(#[0-9A-Fa-f]{6})", css).group(1)
+    for bg in ("#FFFFFF", "#F8FAFC", "#F1F5F9"):
+        assert _contrast(token, bg) >= 4.5, (token, bg)
+    assert "var(--slate-light)" not in css.replace("--slate-light:", "")
+
+
+def test_report_severity_badges_have_readable_text_colours():
+    src = (ROOT / "views" / "5_Reports_Insights.py").read_text(encoding="utf-8")
+    pat = r'\("(?:Alert|Watch|Info)", "#[0-9A-Fa-f]{6}", "(#[0-9A-Fa-f]{6})"\)'
+    text_colours = re.findall(pat, src)
+    assert len(text_colours) == 3                                   # alert, watch, info
+    for c in text_colours:
+        assert _contrast(c, "#FFFFFF") >= 4.5, c
+    assert "color:var(--sev-text)" in src
+
+
+def test_mobile_drawer_closes_after_navigation_script_is_installed():
+    js = ui.CLOSE_DRAWER_JS
+    assert "stPageLink-NavLink" in js and "stSidebarCollapseButton" in js and "max-width: 768px" in js
+    assert "__diqDrawerClose" in js                     # installed once per page load, not once per run
+    src = (ROOT / "src" / "ui.py").read_text(encoding="utf-8")
+    assert "unsafe_allow_javascript=True" in src and "inject_drawer_js()" in src
+
+
+@needs_data
+def test_shell_installs_the_drawer_script_and_has_no_stale_loading_notice():
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=TIMEOUT).run()
+    assert not at.exception
+    assert "__diqDrawerClose" in _html(at) or any("__diqDrawerClose" in str(getattr(e, "value", "")) for e in at.get("html"))
+    assert "Loading the analysis tools" not in _html(at)          # the boot notice is cleared once the page renders
+
+
+def test_tablet_layout_rules_exist():
+    css = ui._css()
+    assert "max-width:1280px" in css and ".diq-kpi-grid:has(> .diq-kpi:nth-child(4):last-child)" in css
+    assert ".diq-find-grid > :last-child:nth-child(odd)" in css
+    assert "stPageLink-NavLink\"] p{white-space:normal" in css       # cross-page links wrap instead of being clipped
+
+
+def test_callout_kinds_include_action():
+    assert ui._CALLOUT_ICON["action"] == "target" and ".diq-callout.action{" in ui._css()
+
+
+# --------------------------------------------------------------------------- #
+# UI review round 2: mobile drawer, cold-start feedback, deep links
+# --------------------------------------------------------------------------- #
+def test_drawer_script_is_narrow_screen_only_and_fails_silently():
+    js = ui.CLOSE_DRAWER_JS
+    assert js.count("try {") >= 2 and js.count("catch (e)") >= 2          # a Streamlit markup change must not throw
+    assert "matchMedia('(max-width: 768px)')" in js                        # desktop behaviour unchanged
+    assert "stSidebar\"] [data-testid=\"stPageLink-NavLink\"]" in js       # navigation links only, not the filters
+    assert "if (b) b.click()" in js                                        # silently does nothing without the button
+
+
+def test_cold_start_notice_is_shown_before_heavy_imports_and_cleared_after_navigation():
+    src = (ROOT / "app.py").read_text(encoding="utf-8")
+    shown = src.index("_boot.html(")
+    heavy = src.index("from src import ui")
+    nav = src.index("st.navigation(")
+    cleared = src.index("_boot.empty()")
+    assert shown < heavy < nav < cleared                    # visible before the slow import, gone once the page can render
+    assert "Loading the analysis tools" in src and 'role="status"' in src
+    # the cached loaders carry their own spinners for the data / model reads
+    ui_src = (ROOT / "src" / "ui.py").read_text(encoding="utf-8")
+    assert '@st.cache_data(show_spinner="Loading delivered orders' in ui_src
+    assert '@st.cache_resource(show_spinner="Loading prediction model' in ui_src
+
+
+def test_cached_file_loaders_see_a_rewritten_file(tmp_path):
+    """Regression: the mtime must be part of the cache key, so retraining / rebuilding data shows up without
+    restarting the server (Streamlit ignores underscore-prefixed arguments when hashing)."""
+    import inspect
+    for fn in (ui._read_orders, ui._read_json, ui._load_model_cached):
+        assert not [p for p in inspect.signature(fn).parameters if p.startswith("_")], fn.__name__
+    f = tmp_path / "m.json"
+    ui._read_json.clear()
+    assert ui._read_json(str(f), ui._mtime(f)) is None          # missing file -> None, cached
+    f.write_text('{"v": 1}')
+    assert ui._read_json(str(f), ui._mtime(f)) == {"v": 1}       # file appeared -> not served from cache
+    f.write_text('{"v": 2}')
+    st_ = f.stat()
+    import os
+    os.utime(f, ns=(st_.st_atime_ns, st_.st_mtime_ns + 5_000_000_000))
+    assert ui._read_json(str(f), ui._mtime(f)) == {"v": 2}
+    ui._read_json.clear()

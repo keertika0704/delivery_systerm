@@ -1,4 +1,4 @@
-"""Tests for the Regional Intelligence page (pages/3_Regional_Intelligence.py).
+"""Tests for the Regional Intelligence page (views/3_Regional_Intelligence.py).
 
 The page is run with ``streamlit.testing`` ``AppTest`` (standalone, so the sidebar filters are driven
 through ``st.session_state``).  Displayed numbers are checked against an independent pandas
@@ -19,7 +19,7 @@ from src import analytics as an
 from src import config, insights, ui
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = str(ROOT / "pages" / "3_Regional_Intelligence.py")
+PAGE = str(ROOT / "views" / "3_Regional_Intelligence.py")
 TIMEOUT = 120
 
 pytestmark = pytest.mark.skipif(not config.ORDERS_DELIVERED_PATH.is_file(),
@@ -467,7 +467,7 @@ def test_no_deprecation_warnings():
         warnings.simplefilter("always")
         at = _run()
     bad = [str(w.message) for w in caught if issubclass(w.category, (DeprecationWarning, FutureWarning))
-           and ("streamlit" in str(w.filename) or "pages" in str(w.filename) or "src" in str(w.filename))]
+           and ("streamlit" in str(w.filename) or "views" in str(w.filename) or "src" in str(w.filename))]
     assert not at.exception and bad == []
 
 
@@ -852,6 +852,21 @@ def test_historical_caveat_is_on_the_page(orders):
     assert "Historical Olist orders" in text and f"{p.min():%b %Y} to {p.max():%b %Y}" in text
     assert "not a measure of current" in text
     assert "not current logistics performance" in _callout(at, "Suggested action")
+
+
+def test_suggested_action_is_not_styled_as_an_error():
+    """A suggested action is a lead to investigate: green 'action' callout, never the red 'alert' (error) style."""
+    at = _run()
+    html = _html(at)
+    assert re.search(r'<div class="diq-callout action"[^>]*>.{0,400}Suggested action', html, re.S)
+    assert not re.search(r'<div class="diq-callout alert"[^>]*>.{0,400}Suggested action', html, re.S)
+
+
+def test_map_row_stacks_below_a_tablet_width():
+    """The map and its commentary share a container the stylesheet stacks under ~1100 px (it was a 200 px text column)."""
+    src = (ROOT / "views" / "3_Regional_Intelligence.py").read_text(encoding="utf-8")
+    assert 'st.container(key="stack-md-map")' in src
+    assert '[class*="st-key-stack-md"]' in ui._CSS and "max-width:1100px" in ui._CSS
 
 
 def test_insufficient_data_header_does_not_claim_rates_are_omitted():

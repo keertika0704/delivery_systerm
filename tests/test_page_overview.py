@@ -1,4 +1,4 @@
-"""Tests for the Overview page (pages/1_Overview.py) and its text builders (src/overview_text.py)."""
+"""Tests for the Overview page (views/1_Overview.py) and its text builders (src/overview_text.py)."""
 from __future__ import annotations
 
 import json
@@ -17,7 +17,7 @@ from src import charts, config, insights as ins_mod, ui
 from src import overview_text as ot
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = str(ROOT / "pages" / "1_Overview.py")
+PAGE = str(ROOT / "views" / "1_Overview.py")
 TIMEOUT = 120
 
 needs_data = pytest.mark.skipif(not config.ORDERS_DELIVERED_PATH.is_file(),
@@ -161,7 +161,7 @@ def test_min_orders_slider_and_monthly_view_rerun_cleanly(orders):
     assert not at.exception
     sp = an.state_performance(orders, min_orders=500)
     n_small = int((~sp["reliable"]).sum())
-    assert f"{n_small} state(s) with fewer than 500 orders" in _text(at)
+    assert f"{ot._pl(n_small, 'state')} with fewer than 500 orders" in _text(at)
     bg = next(b for b in at.get("button_group") if b.key == "ov_monthly_view")
     bg.set_value("Late rate").run()
     assert not at.exception
@@ -334,7 +334,7 @@ def test_state_bars_classes_follow_ci_and_min_orders_slider(orders):
     n_small_1000 = int((sp["n_orders"] < 1000).sum())
     assert sum(1 for _, nm in bars2.values() if nm.startswith("Small sample")) == n_small_1000
     assert "(n < 1,000)" in " ".join(t.name or "" for t in _fig(at, "ov_states").data)
-    assert f"{n_small_1000} state(s) with fewer than 1,000 orders" in _text(at)   # table and text use the slider too
+    assert f"{ot._pl(n_small_1000, 'state')} with fewer than 1,000 orders" in _text(at)   # table and text use the slider too
 
 
 @needs_data
@@ -405,9 +405,44 @@ def test_headline_cards_carry_a_fixed_caveat_line():
     txt = _text(at)
     assert txt.count('class="diq-find-caveat"') == txt.count('class="diq-find ') == 3
     assert "not proof of a cause" in txt or "not a confirmed effect" in txt
-    assert "-webkit-line-clamp" in txt        # long text is clamped, so the caveat must live outside it
+    assert "-webkit-line-clamp" not in txt    # no CSS clipping in the middle of a statistic: the text is a teaser
+    texts = re.findall(r'<div class="diq-find-text">(.*?)</div>', txt, flags=re.S)
+    assert len(texts) == 3 and all(len(t) <= 260 for t in texts)
     block = re.findall(r'<div class="diq-find-text">.*?</div><div class="diq-find-caveat">([^<]*)</div>', txt, flags=re.S)
     assert len(block) == 3 and all(b for b in block)
+
+
+def test_teaser_cuts_at_a_sentence_or_list_item_never_inside_a_statistic():
+    t = ot.teaser
+    assert t("Short text.") == "Short text."
+    two = "First sentence is here. " + "Second sentence is a lot longer than the limit allows for sure " * 3
+    assert t(two, 60) == "First sentence is here."
+    item = ("Compared with the overall 6.8%, these states are higher: AL (Alagoas): 21.4% late (n = 397; 95% CI 17.7% to 25.7%); "
+            "MA (Maranhao): 17.4% late (n = 717; 95% CI 14.8% to 20.4%); SE (Sergipe): 15.2% late (n = 335)")
+    out = t(item, 160)
+    assert out.endswith(" ...") and out.count("(") == out.count(")")          # no dangling bracket
+    assert "MA (" not in out and "n = 397; 95% CI 17.7% to 25.7%)" in out       # whole list items only
+    longer = t(item, 200)
+    assert longer.count("(") == longer.count(")")
+    # no sentence boundary and no list item boundary: cut at a word, bracket closed
+    out2 = t("word " * 10 + "(unfinished statistic n = 5 and more words follow here", 70)
+    assert out2.endswith("...") and "(" not in out2
+
+
+def test_pluralisation_helper():
+    assert ot._pl(1, "state") == "1 state" and ot._pl(15, "month") == "15 months" and ot._pl(0, "state") == "0 states"
+
+
+@needs_data
+def test_single_state_or_category_view_does_not_show_a_self_comparison_card():
+    df = pd.read_parquet(config.ORDERS_DELIVERED_PATH)
+    sub = df[(df["customer_state"] == "RJ") & (df["product_category"] == "health_beauty")]
+    from src import exports
+    items = exports.comparable_insights(ins_mod.generate_insights(sub, 100), 100)
+    kinds = {i.kind for i in items}
+    assert not kinds & {"region_high", "category_duration", "category_delay", "category_freight"}
+    head = ot.headline_insights(items, 3)
+    assert all("1 segments" not in i.text for i in head)
 
 
 def test_insight_caveat_by_kind():
@@ -494,7 +529,7 @@ def test_monthly_text_cases():
     none_ok = ot.monthly_text(_monthly([("2018-01", 50, 5), ("2018-02", 60, 6)]), 100)
     assert "No month in this selection has 100" in none_ok.observed and none_ok.action is None
     one = ot.monthly_text(_monthly([("2018-01", 500, 50), ("2018-02", 60, 6)]), 100)
-    assert "Only one month" in one.observed and "Jan 2018" in one.observed and "1 month(s) with fewer" in one.observed
+    assert "Only one month" in one.observed and "Jan 2018" in one.observed and "1 month with fewer" in one.observed and "1 month with fewer than" in one.observed and "is not charted as a rate" in one.observed
     m = _monthly([("2018-01", 1000, 50), ("2018-02", 1000, 150), ("2018-03", 2000, 100), ("2016-10", 10, 1)])
     t = ot.monthly_text(m, 100)
     assert "5.0%" in t.observed and "15.0%" in t.observed and "Feb 2018" in t.observed
@@ -529,9 +564,9 @@ def test_state_text_cases():
     assert "No states" in ot.state_text(None).observed
     assert "No states" in ot.state_text(_states([]).iloc[0:0]).observed
     tiny = ot.state_text(_states([("AC", 40, 4), ("AP", 30, 3)]), 100)
-    assert "No state has 100 or more orders" in tiny.observed and "2 state(s)" in tiny.observed and tiny.action is None
+    assert "No state has 100 or more orders" in tiny.observed and "2 states" in tiny.observed and tiny.action is None
     one = ot.state_text(_states([("SP", 1000, 50), ("AC", 40, 4)]), 100)
-    assert "Only SP (São Paulo)" in one.observed and "n = 1,000" in one.observed and "1 state(s) with fewer" in one.observed
+    assert "Only SP (São Paulo)" in one.observed and "n = 1,000" in one.observed and "1 state with fewer" in one.observed and "is shown greyed out because its rate is unreliable" in one.observed
     many = ot.state_text(_states([("SP", 1000, 50), ("AL", 400, 80), ("MG", 500, 40), ("AC", 40, 4)]), 100, 0.1)
     assert "from **5.0%** (SP (São Paulo), n = 1,000)" in many.observed and "**20.0%** (AL (Alagoas), n = 400)" in many.observed
     assert "4.0x the lowest" in many.observed and "1 of these 3 states has a point estimate" in many.observed

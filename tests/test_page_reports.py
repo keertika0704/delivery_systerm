@@ -1,4 +1,4 @@
-"""AppTest tests for pages/5_Reports_Insights.py (run standalone, as the shell contract requires)."""
+"""AppTest tests for views/5_Reports_Insights.py (run standalone, as the shell contract requires)."""
 from __future__ import annotations
 
 import html as _html
@@ -14,7 +14,7 @@ from streamlit.testing.v1 import AppTest
 from src import analytics as an
 from src import config, exports, ui
 
-PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "5_Reports_Insights.py")
+PAGE = str(Path(__file__).resolve().parents[1] / "views" / "5_Reports_Insights.py")
 TIMEOUT = 120
 
 pytestmark = pytest.mark.skipif(not config.ORDERS_DELIVERED_PATH.is_file(),
@@ -96,8 +96,8 @@ def test_findings_update_with_filters(orders):
     # the overall insight text of the strongest cards must quote the filtered numbers
     assert f"{100 * k['late_rate']:.1f}%" in plain(filt)
     # single state: regional ranking cannot flag a state against itself
-    assert "region(s) with a reliably higher" not in plain(filt)
-    assert "region(s) with a reliably higher" in plain(base)
+    assert "regions with a reliably higher" not in plain(filt)
+    assert "regions with a reliably higher" in plain(base)
 
 
 def test_min_orders_slider_changes_findings(orders):
@@ -114,7 +114,7 @@ def test_min_orders_slider_changes_findings(orders):
     at.run()
     no_exception(at)
     text = plain(at)
-    assert "Small sample" in text and "Insufficient data" in text and "region(s) with a reliably" not in text
+    assert "Small sample" in text and "Insufficient data" in text and "regions with a reliably" not in text
 
 
 def test_confidence_selector_changes_interval_level():
@@ -205,8 +205,30 @@ def test_explorer_filters_compose_with_sidebar_and_match_pandas(orders):
     assert f"{len(exp):,} matching orders" in text
     assert f"{100 * 1.0:.1f}% late (n = {len(exp):,})" in text
     t = explorer_table(at)
-    assert set(t["customer_state"]) == {"SP"} and set(t["delivery_status"]) == {"late"}
+    assert set(t["customer_state"]) == {"SP"} and set(t["delivery_status"]) == {"Late"}      # shown as a label; downloads keep "late"
     assert len(t) == min(50, len(exp))
+
+
+def test_explorer_search_matches_the_labels_shown_in_the_app(orders):
+    """The filters show 'Health beauty' / 'São Paulo'; the data holds health_beauty / sao paulo.  Typing what is shown must find it."""
+    n_hb = int((orders.product_category.astype(str) == "health_beauty").sum())
+    for needle in ("health_beauty", "Health beauty", "HEALTH BEAUTY"):
+        at = run()
+        at.text_input(key="rep_ex_search").set_value(needle).run()
+        no_exception(at)
+        assert f"{n_hb:,} matching orders" in plain(at), needle
+        assert set(explorer_table(at)["product_category"]) == {"Health beauty"}      # table shows the same label style
+    # the data even has 'sao  paulo' (double space) and an accented 'são paulo' as seller cities: both sides are folded
+    import unicodedata
+    plain_ = lambda x: unicodedata.normalize("NFKD", x).encode("ascii", "ignore").decode()
+    fold = lambda col: orders[col].astype(str).map(plain_).str.lower().str.split().str.join(" ")
+    n_sp = int((fold("customer_city").str.contains("sao paulo", regex=False)
+                | fold("seller_city").str.contains("sao paulo", regex=False)).sum())
+    assert n_sp > 0
+    at = run()
+    at.text_input(key="rep_ex_search").set_value("São Paulo").run()
+    assert "No orders match the explorer filters" not in plain(at)
+    assert f"{n_sp:,} matching orders" in plain(at)
 
 
 def test_explorer_state_outside_sidebar_filter_gives_empty_state(orders):

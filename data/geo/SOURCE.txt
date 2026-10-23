@@ -3,3 +3,11 @@ Derived from https://github.com/codeforamerica/click_that_hood (public/data/braz
 simplified with a Douglas-Peucker pass (0.02 deg tolerance), coordinates rounded to 3 decimals, and
 reduced to the `sigla`/`name` properties (names taken from src/config.py STATE_NAMES). Used only for the
 choropleth in src/charts.py; if the file is missing the chart falls back to a bar chart.
+
+Licence / attribution: the upstream repository (click_that_hood, by Code for America, public/data/) is
+distributed under its own repository licence (see the LICENSE file at
+https://github.com/codeforamerica/click_that_hood) and the boundary geometry it contains
+originates from third-party public boundary datasets credited by that project. This file is a simplified,
+reduced derivative kept only for map display; it carries no warranty and is not an official boundary
+product. Please consult the upstream repository for the authoritative licence and data credits before
+redistributing it outside this project.
